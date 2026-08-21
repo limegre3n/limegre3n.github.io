@@ -1,0 +1,24 @@
+{
+  "name": "wedding-camera",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite app",
+    "build": "vite build app",
+    "emulators": "firebase emulators:start --project demo-wedding",
+    "test:rules": "firebase emulators:exec --project demo-wedding --only auth,firestore,storage \"node --test tests/rules/\"",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.js",
+    "seed": "node scripts/seed.js"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "@playwright/test": "^1.46.0",
+    "firebase-admin": "^14.3.0",
+    "firebase-tools": "^13.35.1",
+    "vite": "^5.4.0"
+  },
+  "dependencies": {
+    "firebase": "^10.14.1"
+  }
+}

@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.gallery == true; }
+
+    // Guest photo uploads. Object name is the bare photo UUID (no extension).
+    // These checks are a pre-filter; authoritative validation lives in onUploadFinalize.
+    match /uploads/{uid}/{uuid} {
+      allow write: if isSignedIn() && request.auth.uid == uid
+        && resource == null                              // write-once, no overwrite
+        && request.resource.size <= 8 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+      allow delete: if false;
+      allow read: if isAdmin()
+        || (hasGallery()
+            && firestore.get(/databases/(default)/documents/config/event)
+                 .data.galleryReleased == true
+            && firestore.get(/databases/(default)/documents/photos/$(uuid))
+                 .data.status == 'visible');
+    }
+
+    // Theme assets (hero image, monogram) — set up by admin, shown to everyone signed in.
+    match /theme/{file} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin()
+        && request.resource.size <= 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // ZIP exports, produced by the exportZip function; downloaded via signed URL.
+    match /exports/{file} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,78 @@
+/* PoC baseline styles — workstream ① replaces with the 90s disposable design. */
+:root {
+  --c-bg: #141210;
+  --c-accent: #e8b04b;
+  --c-text: #f5efe6;
+  --font-stack: -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: var(--font-stack);
+  -webkit-user-select: none;
+  user-select: none;
+}
+#app { min-height: 100dvh; display: flex; align-items: center; justify-content: center; }
+
+.loading, .terminal-card, .welcome-card {
+  max-width: 420px;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: center;
+}
+.monogram { font-size: 2.5rem; color: var(--c-accent); }
+.consent { font-size: 0.8rem; opacity: 0.7; }
+.name-form { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; }
+.name-form input {
+  font-size: 1.1rem; padding: 0.9rem 1rem; border-radius: 12px;
+  border: 1px solid var(--c-accent); background: rgba(255,255,255,0.06);
+  color: var(--c-text); text-align: center;
+}
+button.primary {
+  font-size: 1.1rem; padding: 0.9rem 1rem; border-radius: 12px; border: none;
+  background: var(--c-accent); color: var(--c-bg); font-weight: 700;
+  min-height: 64px;
+}
+.native-capture {
+  display: inline-block; padding: 0.9rem 1rem; border-radius: 12px;
+  border: 1px dashed var(--c-accent); min-height: 64px; line-height: 2.2;
+}
+
+.camera-frame { position: fixed; inset: 0; overflow: hidden; }
+.viewfinder {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; background: #000;
+}
+.screen-flash { position: absolute; inset: 0; background: #fff; z-index: 30; }
+.counter {
+  position: absolute; top: max(1rem, env(safe-area-inset-top)); right: 1rem;
+  font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.2rem;
+  background: rgba(0,0,0,0.55); padding: 0.4rem 0.7rem; border-radius: 8px; z-index: 20;
+}
+.badge {
+  position: absolute; top: max(1rem, env(safe-area-inset-top)); left: 1rem;
+  font-size: 0.85rem; background: rgba(0,0,0,0.55);
+  padding: 0.4rem 0.7rem; border-radius: 8px; z-index: 20;
+}
+.controls {
+  position: absolute; bottom: max(1.5rem, env(safe-area-inset-bottom));
+  left: 0; right: 0; display: flex; align-items: center; justify-content: center;
+  gap: 2rem; z-index: 20;
+}
+.shutter {
+  width: 84px; height: 84px; border-radius: 50%;
+  border: 5px solid #fff; background: var(--c-accent);
+  box-shadow: 0 0 0 4px rgba(0,0,0,0.35);
+}
+.shutter:active { transform: scale(0.92); }
+.ctl {
+  width: 56px; height: 56px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.55); color: #fff; font-size: 1.3rem;
+}
+.ctl.on { background: var(--c-accent); color: var(--c-bg); }
+.winding .viewfinder { filter: brightness(0.2); transition: filter 0.2s; }

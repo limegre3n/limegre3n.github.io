@@ -117,7 +117,9 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 
 ## 3. Storage paths & rules behaviour
 
-- `uploads/{uid}/{uuid}.jpg` — guest upload target.
+- `uploads/{uid}/{uuid}` — guest upload target (**no file extension** — the bare UUID is
+  the object name so Storage rules can reference `photos/{uuid}` directly; contentType
+  `image/jpeg` carries the type).
   - **Write**: `request.auth.uid == uid`, write-once (no overwrite/delete),
     `contentType == 'image/jpeg'`, `size <= 8MB` (UPLOAD-007 pre-filter; authoritative
     validation in finalize function).
@@ -136,7 +138,7 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 
 ## 5. Cloud Functions (workstream ③)
 
-### `onUploadFinalize` — Storage `onObjectFinalized` on `uploads/{uid}/{uuid}.jpg`
+### `onUploadFinalize` — Storage `onObjectFinalized` on `uploads/{uid}/{uuid}`
 Authoritative acceptance pipeline. Steps (order matters):
 1. Parse `{uid, uuid}` from path; malformed → delete object, write `results/{uuid}` invalid (if uuid parseable).
 2. **Idempotency**: in a Firestore transaction, if `photos/{uuid}` or `results/{uuid}` exists → exit (duplicate). 
@@ -168,7 +170,7 @@ Grant = `snapsRemaining += N`, `snapsGranted += N` — allowed for admin via rul
 2. State machine per item: `queued → uploading → awaitingResult → confirmed | rejected`.
    Failures return to `queued` with backoff `min(2^attempt * 2s, 60s) + jitter`, resumed
    immediately on `online` event or page reopen.
-3. Upload: Firebase Storage `uploadBytes` to `uploads/{uid}/{uuid}.jpg`
+3. Upload: Firebase Storage `uploadBytes` to `uploads/{uid}/{uuid}`
    (contentType `image/jpeg`).
 4. Confirmation: `onSnapshot(doc('results', uuid))` (plus a poll fallback every 10s).
    `ok:true` → delete queue item, reconcile counter from `devices/{uid}` snapshot.

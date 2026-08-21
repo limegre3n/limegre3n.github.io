@@ -1,0 +1,87 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.gallery == true; }
+    function eventCfg() {
+      return get(/databases/$(database)/documents/config/event).data;
+    }
+
+    match /config/event {
+      allow read: if isSignedIn();
+      allow update: if isAdmin();
+      allow create, delete: if false;
+    }
+
+    // PIN hash/salt, event cap — server-side only (Admin SDK bypasses rules).
+    match /config/private {
+      allow read, write: if false;
+    }
+
+    match /devices/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(
+             ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
+        && request.resource.data.nickname is string
+        && request.resource.data.nickname.size() >= 1
+        && request.resource.data.nickname.size() <= 30
+        && request.resource.data.snapsRemaining == eventCfg().defaultSnaps
+        && request.resource.data.snapsGranted == 0;
+      // Guests may only touch lastSeenAt. Quota changes: admin (grant) or functions.
+      allow update: if (isSignedIn() && request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt']))
+        || (isAdmin()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['snapsRemaining', 'snapsGranted']));
+      allow delete: if false;
+    }
+
+    // Created exclusively by the finalize function (Admin SDK).
+    match /photos/{uuid} {
+      allow get, list: if isAdmin()
+        || (hasGallery() && eventCfg().galleryReleased == true
+            && resource.data.status == 'visible');
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'rotation'])
+        && request.resource.data.status in ['visible', 'hidden']
+        && request.resource.data.rotation in [0, 90, 180, 270];
+      allow create, delete: if false;
+    }
+
+    // Upload outcomes — the client's confirmation signal. Clients subscribe BEFORE
+    // the finalize function writes the doc, so a read of a not-yet-existing doc must
+    // be allowed (resource == null). Safe: uuids are client-generated 128-bit secrets.
+    match /results/{uuid} {
+      allow get: if isSignedIn()
+        && (resource == null || resource.data.deviceUid == request.auth.uid || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /counters/{doc} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /audit/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.action in
+             ['hide', 'unhide', 'rotate', 'pause', 'resume', 'grant', 'release', 'export'];
+      allow update, delete: if false;
+    }
+
+    match /pinAttempts/{uid} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
