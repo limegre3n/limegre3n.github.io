@@ -1,17 +1,28 @@
 rules_version = '2';
 
+// Cloud Storage security rules — CONTRACTS.md §3.
+// Objects are never publicly readable or listable (PRIVACY-005): guest uploads are
+// write-once and read only by the admin, or by a PIN-verified gallery viewer once the
+// gallery is released AND the matching photos/{uuid} doc is still 'visible'.
 service firebase.storage {
   match /b/{bucket}/o {
 
     function isSignedIn() { return request.auth != null; }
     function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
     function hasGallery() { return isSignedIn() && request.auth.token.gallery == true; }
+    // The object name IS the photo uuid (no extension) — enforce the shape so the
+    // finalize function's path parser and photos/{uuid} lookups always line up.
+    function isUuid(s) {
+      return s.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+    }
 
     // Guest photo uploads. Object name is the bare photo UUID (no extension).
     // These checks are a pre-filter; authoritative validation lives in onUploadFinalize.
     match /uploads/{uid}/{uuid} {
       allow write: if isSignedIn() && request.auth.uid == uid
-        && resource == null                              // write-once, no overwrite
+        && resource == null                              // write-once, no overwrite/delete
+        && isUuid(uuid)
+        && request.resource.size > 0
         && request.resource.size <= 8 * 1024 * 1024
         && request.resource.contentType == 'image/jpeg';
       allow delete: if false;
@@ -27,8 +38,9 @@ service firebase.storage {
     match /theme/{file} {
       allow read: if isSignedIn();
       allow write: if isAdmin()
+        && request.resource.size > 0
         && request.resource.size <= 8 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+        && request.resource.contentType.matches('^image/.*');
     }
 
     // ZIP exports, produced by the exportZip function; downloaded via signed URL.

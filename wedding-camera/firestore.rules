@@ -1,5 +1,10 @@
 rules_version = '2';
 
+// Firestore security rules — CONTRACTS.md §2 is the authority for every shape below.
+// Principles:
+//   * clients never write quota, photo, result, counter or pinAttempt state;
+//   * guests are write-limited to their own devices/{uid} doc (create once + lastSeenAt);
+//   * everything not explicitly allowed is denied by the trailing catch-all.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -9,10 +14,46 @@ service cloud.firestore {
     function eventCfg() {
       return get(/databases/$(database)/documents/config/event).data;
     }
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    function isHexColor(v) {
+      return v is string && v.matches('^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$');
+    }
+    // D19: theming is structured data only. Colours land in CSS custom properties and
+    // the font name in a font-stack, so both are validated here — never free text.
+    function themeOk(t) {
+      return t is map
+        && t.font in ['system', 'serif', 'mono', 'rounded']
+        && t.colors is map
+        && isHexColor(t.colors.bg) && isHexColor(t.colors.accent) && isHexColor(t.colors.text)
+        && t.welcomeText is string && t.welcomeText.size() <= 500
+        && t.consentText is string && t.consentText.size() <= 500
+        && t.monogramText is string && t.monogramText.size() <= 16
+        && (t.heroImagePath == null
+            || (t.heroImagePath is string && t.heroImagePath.matches('^theme/[^/]{1,200}$')));
+    }
 
     match /config/event {
       allow read: if isSignedIn();
-      allow update: if isAdmin();
+      // Admin scope is PRD D13: pause/resume, release, plus display copy/theme.
+      // `slug` (secret link) and `defaultSnaps` (drives the quota granted at device
+      // create) stay console-only so a hijacked admin session cannot re-point the
+      // event or mint unlimited snaps.
+      allow update: if isAdmin()
+        && changed().hasOnly(['paused', 'galleryReleased', 'theme',
+                              'coupleNames', 'eventDateText', 'startAt', 'endAt'])
+        && request.resource.data.slug == resource.data.slug
+        && request.resource.data.defaultSnaps == resource.data.defaultSnaps
+        && request.resource.data.paused is bool
+        && request.resource.data.galleryReleased is bool
+        && request.resource.data.startAt is timestamp
+        && request.resource.data.endAt is timestamp
+        && request.resource.data.coupleNames is string
+        && request.resource.data.coupleNames.size() <= 200
+        && request.resource.data.eventDateText is string
+        && request.resource.data.eventDateText.size() <= 200
+        && themeOk(request.resource.data.theme);
       allow create, delete: if false;
     }
 
@@ -27,17 +68,27 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(
              ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
+        && request.resource.data.keys().hasAll(
+             ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
         && request.resource.data.nickname is string
         && request.resource.data.nickname.size() >= 1
         && request.resource.data.nickname.size() <= 30
         && request.resource.data.snapsRemaining == eventCfg().defaultSnaps
-        && request.resource.data.snapsGranted == 0;
+        && request.resource.data.snapsGranted == 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.lastSeenAt is timestamp
+        && request.resource.data.consentShownAt is timestamp;
       // Guests may only touch lastSeenAt. Quota changes: admin (grant) or functions.
       allow update: if (isSignedIn() && request.auth.uid == uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt']))
+            && changed().hasOnly(['lastSeenAt'])
+            && request.resource.data.lastSeenAt is timestamp)
         || (isAdmin()
-            && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['snapsRemaining', 'snapsGranted']));
+            && changed().hasOnly(['snapsRemaining', 'snapsGranted'])
+            && request.resource.data.snapsRemaining is number
+            && request.resource.data.snapsGranted is number
+            && request.resource.data.snapsRemaining >= 0
+            // A grant only ever adds film (ADMIN-005); it never rewrites history.
+            && request.resource.data.snapsGranted >= resource.data.snapsGranted);
       allow delete: if false;
     }
 
@@ -47,7 +98,7 @@ service cloud.firestore {
         || (hasGallery() && eventCfg().galleryReleased == true
             && resource.data.status == 'visible');
       allow update: if isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'rotation'])
+        && changed().hasOnly(['status', 'rotation'])
         && request.resource.data.status in ['visible', 'hidden']
         && request.resource.data.rotation in [0, 90, 180, 270];
       allow create, delete: if false;
@@ -70,9 +121,15 @@ service cloud.firestore {
     match /audit/{id} {
       allow read: if isAdmin();
       allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['action', 'target', 'actorUid', 'at'])
+        && request.resource.data.keys().hasAll(['action', 'actorUid', 'at'])
         && request.resource.data.actorUid == request.auth.uid
         && request.resource.data.action in
-             ['hide', 'unhide', 'rotate', 'pause', 'resume', 'grant', 'release', 'export'];
+             ['hide', 'unhide', 'rotate', 'pause', 'resume', 'grant', 'release', 'export']
+        && (request.resource.data.get('target', null) == null
+            || (request.resource.data.target is string
+                && request.resource.data.target.size() <= 200))
+        && request.resource.data.at is timestamp;
       allow update, delete: if false;
     }
 

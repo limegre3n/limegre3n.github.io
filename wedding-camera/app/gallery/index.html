@@ -9,8 +9,77 @@
 </head>
 <body>
   <div id="app" data-state="loading" aria-live="polite">
-    <!-- Gallery app renders here (workstream ④) -->
+
+    <!-- ── loading ─────────────────────────────────────────────── -->
+    <section class="screen center" data-view="loading">
+      <p class="sprocket">· · · · · · ·</p>
+      <p class="muted" id="loading-note">Loading the gallery…</p>
+    </section>
+
+    <!-- ── invalid link ────────────────────────────────────────── -->
+    <section class="screen center" data-view="invalid" hidden>
+      <h1 class="title">This link isn’t right</h1>
+      <p class="muted">Check the address you were given — it may have a typo, or belong to another event.</p>
+    </section>
+
+    <!-- ── still developing (GALLERY-001) ──────────────────────── -->
+    <section class="screen center" data-view="locked" hidden>
+      <p class="monogram" data-theme-monogram></p>
+      <h1 class="title" data-theme-couple-names></h1>
+      <p class="date-line" data-theme-event-date></p>
+      <div class="developing">
+        <p class="sprocket">· · · · · · ·</p>
+        <p class="developing-head">Still developing…</p>
+        <p class="muted">The film is at the lab. When the couple has looked through every frame,
+          this page will open with the PIN they shared.</p>
+      </div>
+    </section>
+
+    <!-- ── PIN entry (GALLERY-002) ─────────────────────────────── -->
+    <section class="screen center" data-view="pin" hidden>
+      <p class="monogram" data-theme-monogram></p>
+      <h1 class="title" data-theme-couple-names></h1>
+      <p class="date-line" data-theme-event-date></p>
+      <form class="pin-form" id="pin-form" novalidate>
+        <label class="pin-label" for="pin-input">Enter the gallery PIN</label>
+        <input id="pin-input" class="pin-input" type="text" inputmode="numeric"
+               autocomplete="off" autocorrect="off" spellcheck="false"
+               pattern="[0-9]*" maxlength="6" minlength="4" size="6"
+               aria-describedby="pin-error" placeholder="••••">
+        <button class="btn btn-primary" type="submit" id="pin-submit">Open the gallery</button>
+        <p class="error" id="pin-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- ── photo wall (GALLERY-002/003) ────────────────────────── -->
+    <section class="screen" data-view="wall" hidden>
+      <header class="wall-head">
+        <p class="monogram small" data-theme-monogram></p>
+        <h1 class="title" data-theme-couple-names></h1>
+        <p class="date-line" data-theme-event-date></p>
+        <p class="wall-count" id="wall-count"></p>
+      </header>
+      <div class="wall" id="wall"></div>
+      <p class="empty" id="wall-empty" hidden>No photos yet — check back soon.</p>
+      <footer class="wall-foot muted">Tap a photo to see it large and save it.</footer>
+    </section>
   </div>
+
+  <!-- photo detail + download (GALLERY-003) -->
+  <div class="lightbox" id="lightbox" hidden>
+    <div class="lightbox-inner" role="dialog" aria-modal="true" aria-label="Photo">
+      <img class="lightbox-img" id="lightbox-img" alt="">
+      <p class="lightbox-caption" id="lightbox-caption"></p>
+      <div class="lightbox-actions">
+        <button class="btn btn-quiet" type="button" id="lightbox-close">Close</button>
+        <button class="btn btn-primary" type="button" id="lightbox-download">Save photo</button>
+      </div>
+      <p class="error" id="lightbox-error" role="alert" hidden></p>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
   <script type="module" src="/src/gallery/main.js"></script>
 </body>
 </html>

@@ -3,15 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta name="robots" content="noindex">
-  <meta name="theme-color" content="#1a1a1a">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#141210">
+  <meta name="color-scheme" content="dark">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Wedding Camera</title>
   <link rel="stylesheet" href="/src/guest/guest.css">
 </head>
 <body>
-  <div id="app" data-state="loading" aria-live="polite">
-    <!-- Guest state machine renders here (workstream ①) -->
+  <!-- Guest state machine renders here (workstream ①). The markup below is the
+       first-paint shell only; main.js replaces it once the state is known. -->
+  <div id="app" data-state="loading">
+    <div class="boot" role="status">
+      <div class="boot__body"><span class="boot__lens"></span></div>
+      <p class="boot__label">Loading the camera…</p>
+    </div>
   </div>
+
+  <!-- Single polite live region: exposure counter, badges and state changes are
+       announced here so the viewfinder itself never becomes a live region. -->
+  <p id="live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <noscript>
+    <p style="padding:2rem;text-align:center;color:#f4efe8;font-family:sans-serif">
+      This camera needs JavaScript. Please open the link in your phone’s browser.
+    </p>
+  </noscript>
+
   <script type="module" src="/src/guest/main.js"></script>
 </body>
 </html>
