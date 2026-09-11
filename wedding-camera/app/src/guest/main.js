@@ -30,6 +30,8 @@ const WIND_ON_MS = 800;
 const SCREEN_FLASH_MS = 300;
 const FLASH_PRE_MS = 140;
 const ZOOM_STEPS = [1, 1.5, 2];
+/** Give up on the in-page viewfinder and offer the phone camera after this long. */
+const CAMERA_START_TIMEOUT_MS = 10_000;
 
 const state = {
   slug: null,
@@ -619,7 +621,15 @@ async function renderViewfinder() {
   appEl.dataset.camera = 'starting';
   state.camera = new Camera(video);
   try {
-    await state.camera.start();
+    // A permission prompt that Android refuses to display can leave getUserMedia
+    // pending indefinitely; never strand the guest on a black viewfinder.
+    await Promise.race([
+      state.camera.start(),
+      new Promise((_, reject) => setTimeout(
+        () => reject(Object.assign(new Error('camera-start-timeout'), { name: 'TimeoutError' })),
+        CAMERA_START_TIMEOUT_MS,
+      )),
+    ]);
   } catch (err) {
     console.warn('camera-start-failed', err?.name || err);
     state.cameraError = err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
@@ -902,20 +912,22 @@ const PERMISSION_STEPS = {
   ],
 };
 
+/**
+ * Zero-friction fallback (CAMERA-009). Whatever stopped the in-page viewfinder —
+ * a blocked permission prompt (Android refuses to show it while any overlay or
+ * accessibility service is active), a denied permission, or no getUserMedia at all —
+ * the guest must never be asked to change a phone setting. The phone's own camera
+ * app needs no web permission, so it is the PRIMARY action here; the "fix the
+ * viewfinder" steps are a footnote for the curious.
+ */
 function renderCameraFallback(kind) {
   setDomState(kind);
   const { card, inner } = cardShell('card--fallback');
   const denied = kind === 'permissionDenied';
-  inner.append(el('h2', {}, denied ? 'The camera needs your permission' : 'We can’t open the camera'));
-  inner.append(el('p', { class: 'muted' }, denied
-    ? 'Your browser is blocking the camera for this page. Two ways forward:'
-    : 'No problem — you can still shoot with your phone’s own camera. Every photo counts the same.'));
-
-  if (denied) {
-    const steps = el('ol', { class: 'steps' });
-    for (const step of PERMISSION_STEPS[platform()]) steps.append(el('li', {}, step));
-    inner.append(steps);
-  }
+  inner.append(el('h2', {}, 'Let’s use your phone’s camera'));
+  inner.append(el('p', { class: 'muted' },
+    'This page can’t open the camera directly on your phone right now — no problem. '
+    + 'Tap the button, take your shot, and it lands on the roll just the same.'));
 
   const chip = el('div', { class: 'film-chip' });
   const digits = el('strong', { class: 'digits' }, `${pad2(snapsLeft())}/${pad2(totalSnaps())}`);
@@ -924,21 +936,12 @@ function renderCameraFallback(kind) {
 
   const status = el('p', { class: 'status-line', role: 'status' });
 
-  const retry = el('button', { type: 'button', class: 'btn btn--primary' }, 'Try again');
-  retry.addEventListener('click', async () => {
-    retry.disabled = true;
-    retry.textContent = 'Checking…';
-    state.cameraError = null;
-    await route(true);
-  });
-  inner.append(retry);
-
-  inner.append(nativeCaptureControl((blob, problem) => {
+  const capture = nativeCaptureControl((blob, problem) => {
     if (blob) {
       sfx.arm();
       sfx.shutter();
       haptic([14, 40, 8]);
-      status.textContent = 'Photo added — sending…';
+      status.textContent = 'Got it — sending…';
     } else if (problem === 'no-film') {
       status.textContent = 'Your film is used up.';
     } else {
@@ -946,12 +949,38 @@ function renderCameraFallback(kind) {
     }
     refreshChrome();
     route();
-  }));
+  });
+  capture.classList.add('native--primary');
+  capture.firstChild.textContent = '📷 Take a photo';
+  inner.append(capture);
   inner.append(status);
+
+  // Footnote: how to get the in-page viewfinder back, for guests who care.
+  const more = el('details', { class: 'fallback-more' });
+  more.append(el('summary', {}, denied
+    ? 'Prefer the built-in viewfinder?' : 'Want to try the built-in viewfinder again?'));
+  if (denied) {
+    more.append(el('p', { class: 'muted' },
+      'Your phone blocked the camera prompt — usually a screen filter, chat bubble or '
+      + 'autofill service drawing over the screen, or camera access set to Block for this site.'));
+    const steps = el('ol', { class: 'steps' });
+    for (const step of PERMISSION_STEPS[platform()]) steps.append(el('li', {}, step));
+    more.append(steps);
+  }
+  const retry = el('button', { type: 'button', class: 'btn btn--ghost' }, 'Try again');
+  retry.addEventListener('click', async () => {
+    retry.disabled = true;
+    retry.textContent = 'Checking…';
+    state.cameraError = null;
+    await route(true);
+  });
+  more.append(retry);
+  inner.append(more);
+
   inner.append(el('p', { class: 'consent' },
     'Photos taken with your own camera go through exactly the same private pipeline — location data is stripped before sending.'));
   mount(card);
-  announce(denied ? 'Camera permission needed' : 'Camera unavailable, use your phone camera');
+  announce('Use your phone camera to take a photo');
 
   refreshChrome = () => {
     digits.textContent = `${pad2(snapsLeft())}/${pad2(totalSnaps())}`;

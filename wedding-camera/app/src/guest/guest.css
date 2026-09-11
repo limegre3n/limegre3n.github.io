@@ -354,6 +354,35 @@ button { cursor: pointer; border: none; background: none; }
 
 .native:active { transform: translateY(2px); }
 
+/* Fallback view: the phone-camera button is the hero action. */
+.native--primary {
+  min-height: 76px;
+  width: 100%;
+  justify-content: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 16px;
+  background-color: var(--c-accent);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(0, 0, 0, 0.18));
+  color: var(--c-on-accent);
+  box-shadow: 0 5px 0 var(--shell-edge), 0 10px 20px rgba(0, 0, 0, 0.45);
+}
+.native--primary:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--shell-edge); }
+.fallback-more {
+  width: 100%;
+  text-align: left;
+  font-size: 0.9rem;
+  color: var(--ink-dim);
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+  padding-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.fallback-more summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+.fallback-more .btn { align-self: flex-start; min-height: 48px; }
+
 .steps {
   text-align: left;
   font-size: 0.92rem;
