@@ -184,10 +184,22 @@ What to expect:
 **Recommended: run the provisioning script** (it needs the service-account key from Step 7,
 so do Step 7's key download first, then come back):
 
+Mac/Linux:
 ```bash
 GOOGLE_APPLICATION_CREDENTIALS=sa.json GCLOUD_PROJECT=<project-id> node scripts/setup-event.js
 ```
-(PowerShell: `$env:GOOGLE_APPLICATION_CREDENTIALS="sa.json"; $env:GCLOUD_PROJECT="<project-id>"; node scripts/setup-event.js`)
+Windows **Command Prompt** (the window titled "Command Prompt", prompt ends in `>`):
+```
+set GOOGLE_APPLICATION_CREDENTIALS=sa.json
+set GCLOUD_PROJECT=<project-id>
+node scripts/setup-event.js
+```
+Windows **PowerShell** (prompt starts with `PS`):
+```
+$env:GOOGLE_APPLICATION_CREDENTIALS="sa.json"; $env:GCLOUD_PROJECT="<project-id>"; node scripts/setup-event.js
+```
+The `set`/`$env:` lines only need to be run once per terminal window; the scripts in Step 7
+and 8 reuse them.
 
 It asks for the couple's names, date text, opening/closing times, slug, PIN, colours and
 texts — validating each answer — computes the PIN hash itself, shows a summary, and on
@@ -267,7 +279,12 @@ Admin rights are a "custom claim" that the console cannot set, so run the provid
 GOOGLE_APPLICATION_CREDENTIALS=sa.json GCLOUD_PROJECT=<project-id> \
   node scripts/set-admin.js couple@example.com 'a-strong-password'
 ```
-(Windows PowerShell: `$env:GOOGLE_APPLICATION_CREDENTIALS="sa.json"; $env:GCLOUD_PROJECT="<project-id>"; node scripts/set-admin.js couple@example.com 'a-strong-password'`)
+Windows (Command Prompt or PowerShell, after the `set`/`$env:` lines from Step 6):
+```
+node scripts/set-admin.js couple@example.com "a-strong-password"
+```
+Replace both placeholders with the couple's **real** email and a real password — this
+becomes the admin login. Use double quotes around the password on Windows.
 
    It prints "Admin claim set for couple@example.com".
 3. **Delete the key:** `rm sa.json` (PowerShell: `del sa.json`). You can also revoke it
