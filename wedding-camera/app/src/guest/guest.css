@@ -837,6 +837,71 @@ button { cursor: pointer; border: none; background: none; }
 .ctl[hidden] { display: none; }
 .ctl[disabled] { opacity: 0.45; }
 
+/* Landscape: a bottom deck would eat the short axis and cover the frame, so the
+   chassis becomes a right-hand grip strip (like a real camera held sideways) —
+   shutter under the thumb, flip below, flash above, counter on top. The stage keeps
+   the full remaining width; icons stay upright because nothing here rotates. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .vf { flex-direction: row; }
+
+  .deck {
+    width: calc(150px + env(safe-area-inset-right, 0px));
+    height: 100%;
+    border-radius: var(--r-lg) 0 0 var(--r-lg);
+    padding: calc(env(safe-area-inset-top, 0px) + 0.6rem)
+             calc(env(safe-area-inset-right, 0px) + 0.7rem)
+             calc(env(safe-area-inset-bottom, 0px) + 0.6rem)
+             0.7rem;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  /* Grip ridges turn vertical along the strip's inner edge. */
+  .deck::before {
+    top: 50%; left: 5px;
+    transform: translateY(-50%) rotate(90deg);
+  }
+
+  .deck__top {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    margin-top: 0;
+    gap: 0.45rem;
+  }
+
+  .counter {
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.15rem;
+    padding: 0.45rem 0.35rem;
+    text-align: center;
+  }
+  .counter__dial { width: 18px; height: 18px; }
+  .counter__digits { font-size: 1.3rem; }
+  .counter__label { font-size: 0.58rem; }
+
+  .zoom { align-self: center; }
+
+  .deck__row {
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+    gap: 0.8rem;
+    flex: 1 1 auto;
+    align-content: center;
+  }
+  /* Vertical order: flash (top) → shutter → flip (bottom). */
+  .deck__row .ctl:last-child { order: 1; }
+  .deck__row .shutter { order: 2; }
+  .deck__row .ctl:first-child { order: 3; }
+
+  .shutter { width: 76px; height: 76px; }
+  .shutter::after { inset: 18px; }
+  .ctl { width: 56px; height: 56px; min-width: 56px; min-height: 56px; }
+}
+
 .ctl.on {
   background-color: var(--c-accent);
   color: var(--c-on-accent);
