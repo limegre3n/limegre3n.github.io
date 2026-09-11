@@ -372,16 +372,16 @@ describe('onUploadFinalize edge cases', () => {
       'the duplicate event must not consume a second snap');
   });
 
-  test('outside the event window → window (GUEST-004, acceptance 9)', async () => {
+  test('before startAt → window (GUEST-004, acceptance 9)', async () => {
     const deviceUid = `fnwin-${randomUUID().slice(0, 8)}`;
     const id = randomUUID();
     await adb.doc(`devices/${deviceUid}`).set({
-      nickname: 'Late Guest', snapsRemaining: 1, snapsGranted: 0,
+      nickname: 'Early Guest', snapsRemaining: 1, snapsGranted: 0,
       createdAt: new Date(), lastSeenAt: new Date(), consentShownAt: new Date(),
     });
     await withSharedConfig(async () => {
       const cfg = (await adb.doc('config/event').get()).data();
-      await adb.doc('config/event').update({ endAt: new Date(Date.now() - 60 * 1000) });
+      await adb.doc('config/event').update({ startAt: new Date(Date.now() + 60 * 60 * 1000) });
       try {
         const path = `uploads/${deviceUid}/${id}`;
         await putObject(path, TINY_JPEG);
@@ -390,9 +390,173 @@ describe('onUploadFinalize edge cases', () => {
         assert.ok(await objectGone(path));
         assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 1);
       } finally {
+        await adb.doc('config/event').update({ startAt: cfg.startAt });
+      }
+    });
+  });
+
+  /**
+   * GAP 2 — the phones most at risk (lost signal at the venue, reconnecting days later)
+   * were exactly the ones the old `now > endAt` reject destroyed. An EXISTING device
+   * now has 7 days of grace; only creating a NEW device is window-gated (firestore.rules).
+   */
+  test('after endAt but inside the 7-day grace → accepted, film kept (GAP 2)', async () => {
+    const deviceUid = `fngrace-${randomUUID().slice(0, 8)}`;
+    const id = randomUUID();
+    await adb.doc(`devices/${deviceUid}`).set({
+      nickname: 'Late Guest', snapsRemaining: 1, snapsGranted: 0,
+      createdAt: new Date(), lastSeenAt: new Date(), consentShownAt: new Date(),
+    });
+    await withSharedConfig(async () => {
+      const cfg = (await adb.doc('config/event').get()).data();
+      await adb.doc('config/event').update({ endAt: new Date(Date.now() - 60 * 60 * 1000) });
+      try {
+        const path = `uploads/${deviceUid}/${id}`;
+        await putObject(path, TINY_JPEG);
+        const res = await waitForResult(id);
+        assert.equal(res.ok, true, `an hour late is inside the grace: ${JSON.stringify(res)}`);
+        assert.ok(!(await objectGone(path)), 'an accepted late upload keeps its object');
+        assert.ok((await adb.doc(`photos/${id}`).get()).exists, 'the photo doc is written');
+        assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 0,
+          'a late-but-accepted upload consumes exactly one snap');
+      } finally {
         await adb.doc('config/event').update({ endAt: cfg.endAt });
       }
     });
+  });
+
+  test('beyond endAt + 7 days → window, as before (GAP 2 boundary)', async () => {
+    const deviceUid = `fnstale-${randomUUID().slice(0, 8)}`;
+    const id = randomUUID();
+    await adb.doc(`devices/${deviceUid}`).set({
+      nickname: 'Very Late Guest', snapsRemaining: 1, snapsGranted: 0,
+      createdAt: new Date(), lastSeenAt: new Date(), consentShownAt: new Date(),
+    });
+    await withSharedConfig(async () => {
+      const cfg = (await adb.doc('config/event').get()).data();
+      await adb.doc('config/event')
+        .update({ endAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) });
+      try {
+        const path = `uploads/${deviceUid}/${id}`;
+        await putObject(path, TINY_JPEG);
+        const res = await waitForResult(id);
+        assert.equal(res.ok, false);
+        assert.equal(res.reason, 'window');
+        assert.ok(await objectGone(path));
+        assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 1);
+      } finally {
+        await adb.doc('config/event').update({ endAt: cfg.endAt });
+      }
+    });
+  });
+});
+
+/**
+ * GAP 1 + GAP 3 — pause must DEFER (never destroy), and reconciliation is what
+ * eventually delivers the verdict. The emulator never fires schedules, so the tests
+ * drive the identical sweep through the admin-only `reconcileNow` callable.
+ * `minAgeMs: 0` skips the 5-minute "don't race the trigger" filter and `prefix` scopes
+ * the sweep to this test's own device, so parallel suites are never touched.
+ */
+describe('pause deferral + reconciliation', () => {
+  async function waitForResult(uuid, timeoutMs = 25000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const snap = await adb.doc(`results/${uuid}`).get();
+      if (snap.exists) return snap.data();
+      if (Date.now() > deadline) throw new Error(`timed out waiting for results/${uuid}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  async function putObject(path, bytes, metadata) {
+    await abucket.file(path).save(Buffer.from(bytes), {
+      contentType: 'image/jpeg',
+      metadata: metadata ? { metadata } : undefined,
+    });
+  }
+
+  async function seedDeviceDoc(deviceUid, snaps, nickname) {
+    await adb.doc(`devices/${deviceUid}`).set({
+      nickname, snapsRemaining: snaps, snapsGranted: 0,
+      createdAt: new Date(), lastSeenAt: new Date(), consentShownAt: new Date(),
+    });
+  }
+
+  test('a pause defers the upload — no verdict, object retained — then reconciliation accepts it', async () => {
+    const deviceUid = `fnpause-${randomUUID().slice(0, 8)}`;
+    const id = randomUUID();
+    const path = `uploads/${deviceUid}/${id}`;
+    await seedDeviceDoc(deviceUid, 2, 'Paused Guest');
+    const admin = await adminClient();
+
+    await withSharedConfig(async () => {
+      const previous = (await adb.doc('config/event').get()).data().paused;
+      await adb.doc('config/event').update({ paused: true });
+      try {
+        await putObject(path, TINY_JPEG);
+        // Generous window: the trigger has long since run and (correctly) written nothing.
+        await new Promise((r) => setTimeout(r, 8000));
+        assert.equal((await adb.doc(`results/${id}`).get()).exists, false,
+          'a paused upload must NOT get a verdict — deferral is not rejection');
+        assert.equal((await abucket.file(path).exists())[0], true,
+          'a paused upload must NOT be deleted — this is the photo-loss bug');
+        assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 2,
+          'a deferral never touches quota');
+      } finally {
+        await adb.doc('config/event').update({ paused: previous });
+      }
+
+      // Unpaused: the deferred object is picked up by the sweep, not by a new upload.
+      const stats = await admin.call('reconcileNow', { minAgeMs: 0, prefix: `uploads/${deviceUid}/` });
+      assert.equal(stats.accepted, 1, `sweep should accept the deferred object: ${JSON.stringify(stats)}`);
+      assert.equal(stats.rejected, 0, JSON.stringify(stats));
+
+      const res = await waitForResult(id);
+      assert.equal(res.ok, true, JSON.stringify(res));
+      assert.equal(res.reason, null);
+      assert.ok((await adb.doc(`photos/${id}`).get()).exists, 'the photo survives the pause');
+      assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 1,
+        'exactly one snap consumed, once');
+      assert.equal((await abucket.file(path).exists())[0], true);
+    });
+  });
+
+  test('reconcileNow racing the storage trigger stays idempotent (GAP 3)', async () => {
+    const deviceUid = `fnrecon-${randomUUID().slice(0, 8)}`;
+    const id = randomUUID();
+    const path = `uploads/${deviceUid}/${id}`;
+    await seedDeviceDoc(deviceUid, 3, 'Reconciled Guest');
+    const admin = await adminClient();
+
+    await putObject(path, TINY_JPEG);
+    // The trigger fires too — deliberately. Both paths must converge on one photo.
+    await admin.call('reconcileNow', { minAgeMs: 0, prefix: `uploads/${deviceUid}/` });
+    const res = await waitForResult(id);
+    assert.equal(res.ok, true, JSON.stringify(res));
+
+    // A second sweep must be a complete no-op.
+    const again = await admin.call('reconcileNow', { minAgeMs: 0, prefix: `uploads/${deviceUid}/` });
+    assert.deepEqual(again, { scanned: 0, accepted: 0, rejected: 0, deferred: 0 },
+      'a settled object is skipped entirely on the next sweep');
+
+    await new Promise((r) => setTimeout(r, 2000));
+    const photos = await adb.collection('photos').where('deviceUid', '==', deviceUid).get();
+    assert.equal(photos.size, 1, 'exactly one photo doc, however many paths processed it');
+    assert.equal((await adb.doc(`devices/${deviceUid}`).get()).data().snapsRemaining, 2,
+      'quota decremented exactly once');
+  });
+
+  test('reconcileNow is admin-only (ADMIN-001)', async () => {
+    const anon = await anonClient();
+    await expectCode(anon.call('reconcileNow', {}), 'functions/permission-denied');
+    const unauth = newClient();
+    await expectCode(unauth.call('reconcileNow', {}), 'functions/permission-denied');
+
+    const gallery = await anonClient();
+    await aauth.setCustomUserClaims(gallery.uid, { gallery: true });
+    await gallery.auth.currentUser.getIdToken(true);
+    await expectCode(gallery.call('reconcileNow', {}), 'functions/permission-denied');
   });
 });
 

@@ -65,7 +65,13 @@ service cloud.firestore {
     match /devices/{uid} {
       allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
       allow list: if isAdmin();
+      // Joining is window-gated, uploading is NOT (CONTRACTS §5/§6): this is where the
+      // leaked-QR abuse control lives. A device can only be minted while the event is
+      // open, so the finalize function can safely keep accepting film from an EXISTING
+      // device for days afterwards instead of destroying late uploads.
       allow create: if isSignedIn() && request.auth.uid == uid
+        && request.time >= eventCfg().startAt
+        && request.time <= eventCfg().endAt
         && request.resource.data.keys().hasOnly(
              ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
         && request.resource.data.keys().hasAll(

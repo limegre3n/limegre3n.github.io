@@ -12,6 +12,7 @@ import { test, expect } from '@playwright/test';
 import {
   openHarness, waitForHarness, blockUploads, unblockUploads, assertStorageRulesLoaded,
   pending, events, pageErrors, snapsRemaining, setSnapsRemaining,
+  setPaused, resultExists, reconcileNow,
 } from './helpers.js';
 
 /**
@@ -176,6 +177,48 @@ test.describe('upload queue', () => {
     await expectPending(page, 0);
 
     expect(confirmations(await events(page))).toBe(1);
+    expect(await snapsRemaining(uid)).toBe(defaultSnaps - 1);
+    expect(await pageErrors(page)).toEqual([]);
+  });
+
+  /**
+   * The photo-loss regression test. A pause used to reject in-flight uploads: the object
+   * was deleted, a results{ok:false} doc was written and the client dropped its only
+   * copy. Now the server DEFERS — so the client must simply keep holding the item, with
+   * no verdict, until reconciliation delivers one.
+   */
+  test('g) pause: an in-flight photo is held, not dropped, and lands after reconciliation', async ({ page }) => {
+    await openHarness(page);
+    const { uid, defaultSnaps } = await page.evaluate(() => window.__h.signIn('Paused Mid Roll'));
+    await page.evaluate(() => window.__h.initQueue());
+
+    await setPaused(true);
+    let uuid;
+    try {
+      [uuid] = await page.evaluate(() => window.__h.shoot(1));
+      // Long enough for the upload to land and the finalize trigger to defer it.
+      await page.waitForTimeout(12_000);
+
+      expect(await resultExists(uuid)).toBe(false); // deferred: no verdict at all
+      expect(await pending(page)).toBe(1);          // …and the client still holds it
+      const states = await page.evaluate(() => window.__h.states());
+      expect(states).toHaveLength(1);
+      expect(['uploading', 'awaitingResult', 'queued']).toContain(states[0].state);
+      // Nothing was surfaced as a rejection, and no snap was spent.
+      expect((await events(page)).some((e) => 'rejection' in e)).toBe(false);
+      expect(await snapsRemaining(uid)).toBe(defaultSnaps);
+    } finally {
+      await setPaused(false);
+    }
+
+    // Resumed: the sweep picks the deferred object up and the client settles normally.
+    const stats = await reconcileNow({ minAgeMs: 0, prefix: `uploads/${uid}/` });
+    expect(stats.accepted).toBe(1);
+
+    await expectPending(page, 0);
+    const evs = await events(page);
+    expect(confirmations(evs)).toBe(1);
+    expect(evs.some((e) => 'rejection' in e)).toBe(false);
     expect(await snapsRemaining(uid)).toBe(defaultSnaps - 1);
     expect(await pageErrors(page)).toEqual([]);
   });

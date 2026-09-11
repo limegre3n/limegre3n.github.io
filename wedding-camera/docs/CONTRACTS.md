@@ -80,7 +80,8 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 { nickname: string /*1..30 chars*/, snapsRemaining: number, snapsGranted: number,
   createdAt: Timestamp, lastSeenAt: Timestamp, consentShownAt: Timestamp }
 ```
-- **Create**: client, only own uid, `snapsRemaining == config/event.defaultSnaps`,
+- **Create**: client, only own uid, **only while `startAt <= request.time <= endAt`**
+  (joining is window-gated — the leaked-QR control), `snapsRemaining == config/event.defaultSnaps`,
   `snapsGranted == 0`, nickname length-validated. One-time (no client delete).
 - **Update**: client may update `lastSeenAt` ONLY. Quota fields: functions/admin only.
 
@@ -96,7 +97,9 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 ### `results/{uuid}` — upload outcome, created ONLY by finalize function
 ```js
 { deviceUid: string, ok: boolean,
-  reason: null | 'quota'|'cap'|'window'|'paused'|'invalid'|'duplicate',
+  // 'paused' is retained for historical docs only — a pause now DEFERS (§5), so the
+  // finalize function never writes it and clients never observe it.
+  reason: null | 'quota'|'cap'|'window'|'invalid'|'duplicate',
   at: Timestamp }
 ```
 - Readable only by the owning device (and admin). This is the client's confirmation signal.
@@ -138,16 +141,47 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 
 ## 5. Cloud Functions (workstream ③)
 
-### `onUploadFinalize` — Storage `onObjectFinalized` on `uploads/{uid}/{uuid}`
-Authoritative acceptance pipeline. Steps (order matters):
+### `processUpload({ bucketName, filePath, size, metadata })` — shared acceptance pipeline
+Authoritative acceptance pipeline, used by BOTH the storage trigger and reconciliation.
+Steps (order matters):
 1. Parse `{uid, uuid}` from path; malformed → delete object, write `results/{uuid}` invalid (if uuid parseable).
 2. **Idempotency**: in a Firestore transaction, if `photos/{uuid}` or `results/{uuid}` exists → exit (duplicate). 
 3. Download head bytes; **magic-byte check** JPEG (`FF D8 FF`) (UPLOAD-007). Size ≤ 8MB.
-4. Read `config/event`, `config/private`, `counters/event`, `devices/{uid}` in the transaction; reject when: outside `[startAt, endAt]` (`window`), `paused` (`paused`),
-   `photoCount >= eventCap` (`cap`), `snapsRemaining <= 0` (`quota`), no device doc (`invalid`).
+4. Read `config/event`, `config/private`, `counters/event`, `devices/{uid}` in the transaction; then:
+   - `now < startAt` → reject `window` (rules forbid creating a device this early, so
+     nothing legitimate can be in flight);
+   - `now > endAt + UPLOAD_GRACE_MS` (**7 days**, a code constant — no config field, no
+     deployment change) → reject `window`;
+   - between `endAt` and `endAt + UPLOAD_GRACE_MS` → **accept normally**. Joining is
+     window-gated in `firestore.rules`, uploading is not: a phone that lost signal at the
+     venue must still be able to deliver its queued film days later;
+   - `paused` → **DEFER** (see below), never reject;
+   - `photoCount >= eventCap` → `cap`; no device doc → `invalid`; `snapsRemaining <= 0` → `quota`.
 5. Reject ⇒ delete storage object + write `results/{uuid}{ok:false,reason}` (never decrement).
-6. Accept ⇒ atomically: `snapsRemaining -= 1`, `photoCount += 1`, create `photos/{uuid}`
+6. **Defer** ⇒ write NOTHING and delete NOTHING. The object stays in the bucket, the client
+   keeps waiting, and the upload is retried later (trigger retry + reconciliation). `paused`
+   is therefore no longer a `results.reason` the client can ever observe.
+7. Accept ⇒ atomically: `snapsRemaining -= 1`, `photoCount += 1`, create `photos/{uuid}`
    (status `visible`, dims read from JPEG header), create `results/{uuid}{ok:true}`.
+
+### `onUploadFinalize` — Storage `onObjectFinalized` on `uploads/{uid}/{uuid}`, `retry: true`
+Thin wrapper around `processUpload`. A `deferred` outcome is re-thrown as a tagged error so
+Eventarc redelivers the event with exponential backoff (bounded at 24h in production; the
+emulator does not retry at all — reconciliation is the durable safety net either way).
+
+### `reconcileUploads` — scheduled, `every 15 minutes`
+Lists objects under `uploads/`, and for each object older than 5 minutes that has **no**
+`results/{uuid}` doc, runs `processUpload`. Covers a crashed finalize, an exhausted retry
+budget, and objects deferred while the event was paused (accepted on the first sweep after
+an admin resumes). Idempotent by construction — the `results/{uuid}` check inside
+`processUpload` and again inside its transaction means a sweep racing the trigger can only
+ever produce one photo and one decrement.
+
+### `reconcileNow` — callable `{ minAgeMs?: number, prefix?: string }` → `{ scanned, accepted, rejected, deferred }`
+Admin claim required (`request.auth.token.admin === true`). Runs the same sweep immediately:
+the emergency "send everything now" button, and the only way tests can exercise
+reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) and `prefix`
+(must start with `uploads/`) are call-scoped knobs, **not** configuration.
 
 ### `verifyGalleryPin` — callable `{ pin: string }` → `{ ok: boolean, retryAfterSec?: number }`
 - Requires auth. Rate limit via `pinAttempts/{uid}`: max 5 fails / 15 min → `retryAfterSec`.
@@ -175,7 +209,15 @@ Grant = `snapsRemaining += N`, `snapsGranted += N` — allowed for admin via rul
 4. Confirmation: `onSnapshot(doc('results', uuid))` (plus a poll fallback every 10s).
    `ok:true` → delete queue item, reconcile counter from `devices/{uid}` snapshot.
    `ok:false` → delete queue item, restore optimistic counter, surface reason state
-   (quota/window/paused per PRD §5; `invalid`/`duplicate` are silent + logged).
+   (quota/window per PRD §5; `invalid`/`duplicate` are silent + logged).
+   **An item is NEVER removed without a verdict.** No verdict is not a failure: an upload
+   made while the event is paused is *deferred* server-side (§5), so the doc can be a long
+   time coming. After the 2-minute give-up the item is re-pumped; if the re-PUT is refused
+   by the write-once storage rule AND the item's own earlier PUT is known to have landed,
+   the item returns to `awaitingResult` (the bytes are safe in the bucket — keep watching)
+   and a `change` is emitted so the UI keeps showing "N sending…". Only a write-once
+   refusal for bytes we never stored is treated as an error and backed off.
+   `paused` is no longer a reachable `results.reason`.
 5. Counter: optimistic decrement at shutter; authoritative value = `devices/{uid}.snapsRemaining`
    minus in-flight queue items. Never show negative.
 6. `beforeunload` guard while queue non-empty (UPLOAD-005). Persistence probe on boot:

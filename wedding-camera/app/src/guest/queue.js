@@ -152,6 +152,9 @@ class UploadQueue extends EventTarget {
         uuid: rec.uuid,
         capturedAt: rec.capturedAt || Date.now(),
         attemptCount: Number(rec.attemptCount) || 0,
+        // Survives the reload so a write-once refusal after a restart is still read as
+        // "already stored, waiting for a verdict" rather than as an upload failure.
+        uploaded: rec.uploaded === true,
         // In-flight states never survive a reload: resume as 'queued'. Re-upload is
         // safe because pump() checks results/{uuid} first and Storage is write-once.
         state: 'queued',
@@ -176,7 +179,7 @@ class UploadQueue extends EventTarget {
   async enqueue(blob, capturedAt = Date.now()) {
     if (!isUsableBlob(blob)) throw new TypeError('enqueue requires a non-empty Blob');
     const uuid = crypto.randomUUID();
-    this.items.set(uuid, { uuid, capturedAt, attemptCount: 0, state: 'queued' });
+    this.items.set(uuid, { uuid, capturedAt, attemptCount: 0, uploaded: false, state: 'queued' });
     this.blobs.set(uuid, blob);
     // UPLOAD-001: persisted before any network attempt.
     await this.#persist(uuid);
@@ -196,6 +199,7 @@ class UploadQueue extends EventTarget {
       blob,
       capturedAt: item.capturedAt,
       attemptCount: item.attemptCount,
+      uploaded: item.uploaded === true,
       // Persisted resume state is always 'queued' (see #restore).
       state: 'queued',
     })).catch((err) => {
@@ -263,10 +267,21 @@ class UploadQueue extends EventTarget {
         // earlier attempt landed — fall through and wait for the finalize verdict.
         if (err?.code !== 'storage/unauthorized') throw err;
         const verdict = await getDoc(doc(db, 'results', uuid));
-        if (!verdict.exists()) throw err; // genuinely unauthorized → retry/backoff
-        await this.settle(uuid, verdict.data());
-        return;
+        if (verdict.exists()) { await this.settle(uuid, verdict.data()); return; }
+        // No verdict YET, and we know from `uploaded` that our own PUT already landed:
+        // this is a re-PUT of bytes that are safely in the bucket. The server DEFERS
+        // (never rejects) uploads made while the event is paused — it writes no result
+        // and keeps the object — so a verdict can legitimately be a long way off. Go
+        // back to watching instead of counting this as a failure: an item is never
+        // given up on without a verdict. awaitResult() re-emits 'change' so the UI
+        // keeps showing "N sending…", and its give-up timer re-pumps us later.
+        if (item.uploaded) { this.awaitResult(uuid); return; }
+        throw err; // genuinely unauthorized (never stored by us) → retry/backoff
       }
+      // The bytes are in the bucket now; remember it so a later re-PUT refusal is read
+      // as "waiting for a verdict" rather than as an error (see the catch above).
+      item.uploaded = true;
+      await this.#persist(uuid);
       this.awaitResult(uuid);
     } catch (err) {
       await this.#failAttempt(uuid, err);

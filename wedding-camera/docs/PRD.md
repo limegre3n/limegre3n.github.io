@@ -51,7 +51,7 @@ after the event.
 - **GUEST-001**: Scanning the event QR opens the web app in the default mobile browser with no install step.
 - **GUEST-002**: A first-time guest must enter a non-empty nickname (1–30 chars) and see the consent line before camera access is requested.
 - **GUEST-003**: A returning device skips nickname entry and restores its remaining snap count from the server.
-- **GUEST-004**: Outside the event window, the app shows "not started yet" / "camera closed" pages and uploads are rejected server-side.
+- **GUEST-004**: Outside the event window, the app shows "not started yet" / "camera closed" pages and a new device cannot be registered (enforced in `firestore.rules` — this is the leaked-QR control). Uploads are judged separately: an upload before `startAt` is rejected server-side, and an upload from an *already registered* device is still accepted for 7 days after `endAt` so a phone that lost signal can deliver its queued film. Uploads keep running in the background while the "camera closed" page is shown.
 - **GUEST-005**: When paused by admin, uploads are rejected server-side and the guest sees a gentle "camera resting" message.
 
 ### Camera
@@ -72,7 +72,8 @@ after the event.
 - **UPLOAD-004**: A failed/rejected upload never consumes a snap.
 - **UPLOAD-005**: Pending-count indicator always visible when queue non-empty; `beforeunload` warning when leaving with a non-empty queue.
 - **UPLOAD-006**: Queued photos survive browser close and resume on next open. Private-browsing (ephemeral storage) is detected and messaged.
-- **UPLOAD-007**: Server rejects: non-image content (magic-byte check, not extension), files >8MB, uploads beyond device quota, event cap, event window, or pause.
+- **UPLOAD-007**: Server rejects: non-image content (magic-byte check, not extension), files >8MB, uploads beyond device quota, event cap, or event window (before `startAt`, or more than 7 days after `endAt`). A **pause never rejects** — it defers: the object is kept, no verdict is written, and the photo is accepted once the admin resumes. No photo that reaches the bucket is ever destroyed for a reason that may later stop applying.
+- **UPLOAD-009**: A photo that reaches the bucket but gets no verdict (finalize crash, exhausted retries, pause deferral) is recovered by a reconciliation sweep every 15 minutes, and on demand by an admin. Recovery is idempotent: one photo, one snap, however many paths process the object.
 - **UPLOAD-008**: Guest can keep shooting while earlier photos upload.
 
 ### Admin

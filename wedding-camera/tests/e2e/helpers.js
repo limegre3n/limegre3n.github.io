@@ -103,3 +103,61 @@ export async function setSnapsRemaining(uid, value) {
   });
   if (!res.ok) throw new Error(`emulator PATCH devices/${uid} → ${res.status} ${await res.text()}`);
 }
+
+/** Admin-only pause switch on the SHARED config/event — always restore in a finally. */
+export async function setPaused(value) {
+  const url = `${FS_BASE}/config/event?updateMask.fieldPaths=paused`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: FS_HEADERS,
+    body: JSON.stringify({ fields: { paused: { booleanValue: !!value } } }),
+  });
+  if (!res.ok) throw new Error(`emulator PATCH config/event → ${res.status} ${await res.text()}`);
+}
+
+export async function resultExists(uuid) {
+  const res = await fetch(`${FS_BASE}/results/${uuid}`, { headers: FS_HEADERS });
+  return res.status === 200;
+}
+
+const AUTH_BASE = 'http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1';
+
+/**
+ * Mints a throwaway admin user in the auth emulator and returns a fresh ID token
+ * carrying `{admin:true}`. The `Bearer owner` credential is the emulator's built-in
+ * privileged identity, so no service-account key is needed.
+ */
+async function adminIdToken() {
+  const email = `e2e-admin-${Math.random().toString(36).slice(2, 10)}@example.com`;
+  const password = 'pw123456';
+  const signUp = await fetch(`${AUTH_BASE}/accounts:signUp?key=demo-key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true }),
+  }).then((r) => r.json());
+  await fetch(`${AUTH_BASE}/projects/${PROJECT_ID}/accounts:update`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ localId: signUp.localId, customAttributes: JSON.stringify({ admin: true }) }),
+  });
+  // Re-sign-in so the token actually carries the freshly written claim.
+  const signIn = await fetch(`${AUTH_BASE}/accounts:signInWithPassword?key=demo-key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true }),
+  }).then((r) => r.json());
+  return signIn.idToken;
+}
+
+/** Runs the admin reconciliation sweep (CONTRACTS §5) against the functions emulator. */
+export async function reconcileNow(data = {}) {
+  const token = await adminIdToken();
+  const res = await fetch(`http://127.0.0.1:5001/${PROJECT_ID}/us-central1/reconcileNow`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
+  const body = await res.json();
+  if (!res.ok || body.error) throw new Error(`reconcileNow failed: ${JSON.stringify(body)}`);
+  return body.result;
+}

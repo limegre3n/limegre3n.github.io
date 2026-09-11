@@ -133,6 +133,13 @@ npx firebase login
 A browser tab opens → choose the Google account that owns the project → **Allow**.
 The terminal prints "Success! Logged in as …".
 
+> **If you see `npm error could not determine executable to run`:** the Firebase CLI
+> isn't installed in this folder yet — usually because Step 1's `npm install` was skipped
+> or failed. Run `npm install` (inside `wedding-camera/`) and retry. If it still fails,
+> use the unambiguous package name instead: `npx firebase-tools login`, and later
+> `npx firebase-tools deploy`. (The plain `firebase` npm package is the web SDK, which
+> has no command-line tool — that's what the error is complaining about.)
+
 ```bash
 npm run build          # compiles the frontend into app/dist
 npx firebase deploy    # hosting + Firestore rules + Storage rules + Cloud Functions

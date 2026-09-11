@@ -7,6 +7,7 @@
  * metadata. Everything that costs a snap or grants access is decided here.
  */
 const { onObjectFinalized } = require('firebase-functions/v2/storage');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const logger = require('firebase-functions/logger');
 const { initializeApp } = require('firebase-admin/app');
@@ -27,6 +28,26 @@ const TRAILING_UUID = new RegExp(`(${UUID})$`);
 const CAPTURED_AT_SLACK_MS = 48 * 60 * 60 * 1000;
 const HEAD_BYTES = 64 * 1024;
 const EXTENDED_HEAD_BYTES = 1024 * 1024;
+/**
+ * Grace period after `config/event.endAt` during which an upload from an ALREADY
+ * EXISTING device is still accepted (CONTRACTS §5, PRD GUEST-004/UPLOAD-007).
+ *
+ * Joining and uploading are deliberately split: `firestore.rules` refuses to create a
+ * new `devices/{uid}` doc outside `[startAt, endAt]` (that is where the leaked-QR abuse
+ * control now lives), so a device that exists at all was admitted while the event was
+ * open. A phone that lost signal at the reception and only reconnects days later must
+ * still be able to deliver its queued film — destroying those objects is the single
+ * worst failure this system can have. Deliberately a code constant, not a config field:
+ * no deployment/runbook change, nothing for an admin to mis-set under pressure.
+ */
+const UPLOAD_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Reconciliation only considers objects at least this old, so it never races the
+ * storage trigger for a photo that has simply not been processed yet.
+ */
+const RECONCILE_MIN_AGE_MS = 5 * 60 * 1000;
+/** Marker on errors thrown to make the Eventarc/Storage trigger retry (see §5). */
+const DEFERRED_TAG = 'upload-deferred';
 
 /** JPEG magic bytes: FF D8 FF */
 function isJpeg(buf) {
@@ -123,19 +144,35 @@ function isForeignBucket(bucket) {
   return bucket !== pid && !bucket.startsWith(`${pid}.`);
 }
 
-exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '512MiB' }, async (event) => {
-  const filePath = event.data.name;
+/** A deferral is NOT a failure: the bytes stay in the bucket and we try again later. */
+function deferredError(uuid, reason) {
+  const err = new Error(`upload deferred (${reason}) for ${uuid}`);
+  err[DEFERRED_TAG] = true;
+  err.deferReason = reason;
+  return err;
+}
 
-  if (isForeignBucket(event.data.bucket)) {
-    logger.debug('ignoring foreign emulator bucket', { bucket: event.data.bucket });
-    return;
-  }
+/**
+ * The authoritative acceptance pipeline, shared by the storage trigger and by
+ * reconciliation (CONTRACTS §5). Never throws for an expected outcome; resolves to
+ *
+ *   { status: 'ignored' }                     not an uploads/ object
+ *   { status: 'duplicate', uuid }             already has a verdict
+ *   { status: 'accepted', uuid, uid }         photo + result written, snap consumed
+ *   { status: 'rejected', uuid, uid, reason } object deleted, results{ok:false} written
+ *   { status: 'deferred', uuid, uid, reason } NOTHING written, object RETAINED
+ *
+ * A 'deferred' outcome is the pause path (GAP 1): the object is left untouched and no
+ * results doc is written, so the client keeps waiting instead of losing the photo. The
+ * caller decides how to retry — the trigger throws (Eventarc redelivers with backoff),
+ * reconciliation simply picks the object up on a later sweep.
+ */
+async function processUpload({ bucketName, filePath, size, metadata }) {
+  // Anything outside the uploads/ contract is ignored
+  // (theme/ and exports/ objects also trigger the storage handler).
+  if (!filePath || !filePath.startsWith('uploads/')) return { status: 'ignored' };
 
-  // Anything outside the uploads/ contract that reaches here is ignored
-  // (theme/ and exports/ objects also trigger this handler).
-  if (!filePath || !filePath.startsWith('uploads/')) return;
-
-  const bucket = getStorage().bucket(event.data.bucket);
+  const bucket = getStorage().bucket(bucketName);
   const file = bucket.file(filePath);
   const m = UPLOAD_PATH.exec(filePath);
 
@@ -156,19 +193,20 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
       }
     }
     logger.warn('rejected malformed upload path', { filePath });
-    return;
+    return { status: 'rejected', uuid: null, uid: null, reason: 'invalid' };
   }
   const [, uid, uuid] = m;
 
-  // Fast idempotency check outside the transaction (duplicate storage events).
+  // Fast idempotency check outside the transaction (duplicate storage events,
+  // and reconciliation racing the trigger for the same object).
   const existing = await db.doc(`results/${uuid}`).get();
-  if (existing.exists) return;
+  if (existing.exists) return { status: 'duplicate', uuid, uid };
 
   // Content validation before touching quota.
-  const size = Number(event.data.size || 0);
   let rejectReason = null;
   let dims = { width: null, height: null };
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_BYTES) {
+  const byteSize = Number(size || 0);
+  if (!Number.isFinite(byteSize) || byteSize <= 0 || byteSize > MAX_BYTES) {
     rejectReason = 'invalid';
   } else {
     const head = await readHead(file, HEAD_BYTES - 1);
@@ -178,8 +216,8 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
       dims = jpegDimensions(head);
       // Big EXIF-free JPEGs put SOF early, but be forgiving of odd encoders: one
       // wider read, then give up and store nulls rather than reject a valid photo.
-      if (dims.width === null && size > head.length) {
-        const more = await readHead(file, Math.min(size, EXTENDED_HEAD_BYTES) - 1);
+      if (dims.width === null && byteSize > head.length) {
+        const more = await readHead(file, Math.min(byteSize, EXTENDED_HEAD_BYTES) - 1);
         if (more) dims = jpegDimensions(more);
       }
     }
@@ -188,8 +226,8 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
   if (rejectReason) {
     await file.delete().catch(() => {});
     await writeResult(uuid, uid, false, rejectReason);
-    logger.info('upload rejected', { uuid, uid, reason: rejectReason, size });
-    return;
+    logger.info('upload rejected', { uuid, uid, reason: rejectReason, size: byteSize });
+    return { status: 'rejected', uuid, uid, reason: rejectReason };
   }
 
   // Transactional acceptance: window/pause/cap/quota + atomic decrement.
@@ -215,9 +253,19 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
     const now = Timestamp.now();
 
     // Order per CONTRACTS §5.4: window → paused → cap → device → quota.
+    //
+    // Before startAt is still a hard reject: `firestore.rules` cannot have admitted a
+    // device yet, so nothing legitimate can be in flight.
     if (cfg.startAt && now.toMillis() < cfg.startAt.toMillis()) return { ok: false, reason: 'window' };
-    if (cfg.endAt && now.toMillis() > cfg.endAt.toMillis()) return { ok: false, reason: 'window' };
-    if (cfg.paused === true) return { ok: false, reason: 'paused' };
+    // After endAt the device is already admitted — its film is real, it is just late.
+    // Accept until endAt + UPLOAD_GRACE_MS; only past that is deleting the bytes
+    // defensible (the event is long over and the object store is being wound down).
+    if (cfg.endAt && now.toMillis() > cfg.endAt.toMillis() + UPLOAD_GRACE_MS) {
+      return { ok: false, reason: 'window' };
+    }
+    // GAP 1: pause DEFERS, it never rejects. No results doc, no delete — the client
+    // keeps waiting and the object is re-processed after the admin resumes.
+    if (cfg.paused === true) return { ok: false, defer: true, reason: 'paused' };
     if (priv.eventCap && photoCount >= priv.eventCap) return { ok: false, reason: 'cap' };
     if (!deviceSnap.exists) return { ok: false, reason: 'invalid' };
 
@@ -230,10 +278,10 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
       deviceUid: uid,
       nickname: typeof device.nickname === 'string' ? device.nickname.slice(0, 30) : '',
       storagePath: filePath,
-      byteSize: size,
+      byteSize,
       width: dims.width,
       height: dims.height,
-      capturedAt: resolveCapturedAt(event.data.metadata, now),
+      capturedAt: resolveCapturedAt(metadata, now),
       receivedAt: now,
       status: 'visible',
       rotation: 0,
@@ -242,15 +290,151 @@ exports.onUploadFinalize = onObjectFinalized({ region: 'us-central1', memory: '5
     return { ok: true };
   });
 
-  if (outcome.duplicate) return;
+  if (outcome.duplicate) return { status: 'duplicate', uuid, uid };
+  if (outcome.defer) {
+    // Nothing was written and nothing was deleted: the photo is safe in the bucket.
+    logger.info('upload deferred', { uuid, uid, reason: outcome.reason, size: byteSize });
+    return { status: 'deferred', uuid, uid, reason: outcome.reason };
+  }
   if (!outcome.ok) {
     await file.delete().catch(() => {});
     await writeResult(uuid, uid, false, outcome.reason);
-    logger.info('upload rejected', { uuid, uid, reason: outcome.reason, size });
-    return;
+    logger.info('upload rejected', { uuid, uid, reason: outcome.reason, size: byteSize });
+    return { status: 'rejected', uuid, uid, reason: outcome.reason };
   }
-  logger.info('upload accepted', { uuid, uid, size, width: dims.width, height: dims.height });
-});
+  logger.info('upload accepted', { uuid, uid, size: byteSize, width: dims.width, height: dims.height });
+  return { status: 'accepted', uuid, uid };
+}
+
+/**
+ * Storage trigger. `retry: true` is what turns a deferral into a real retry in
+ * production: Eventarc redelivers the finalize event with exponential backoff (up to
+ * 24h) whenever the handler throws. Retries are bounded and the emulator does not retry
+ * at all, so `reconcileUploads` below is the durable safety net, not an optimisation.
+ */
+exports.onUploadFinalize = onObjectFinalized(
+  { region: 'us-central1', memory: '512MiB', retry: true },
+  async (event) => {
+    if (isForeignBucket(event.data.bucket)) {
+      logger.debug('ignoring foreign emulator bucket', { bucket: event.data.bucket });
+      return;
+    }
+    const outcome = await processUpload({
+      bucketName: event.data.bucket,
+      filePath: event.data.name,
+      size: event.data.size,
+      metadata: event.data.metadata,
+    });
+    // Throwing is the ONLY way to ask Eventarc to redeliver. Safe to throw: a deferral
+    // wrote nothing, so the retry re-runs the whole pipeline from scratch.
+    if (outcome && outcome.status === 'deferred') {
+      throw deferredError(outcome.uuid, outcome.reason);
+    }
+  }
+);
+
+/**
+ * GAP 3 — reconciliation sweep. Walks stored upload objects and re-runs the pipeline
+ * for any that still have no verdict: a finalize crash, a retry budget that ran out, or
+ * an object deferred while the event was paused. Idempotent by construction — the
+ * results/{uuid} check inside processUpload (and again inside its transaction) means a
+ * sweep racing the trigger can only ever produce one photo and one decrement.
+ *
+ * @param {object}  [opts]
+ * @param {number}  [opts.minAgeMs]  ignore objects younger than this (default 5 min),
+ *                                   so we never race the trigger on a fresh upload.
+ * @param {string}  [opts.prefix]    restrict the sweep to a sub-path of `uploads/`.
+ */
+async function sweepUploads({ minAgeMs = RECONCILE_MIN_AGE_MS, prefix = 'uploads/' } = {}) {
+  const bucket = getStorage().bucket();
+  const cutoff = Date.now() - Math.max(0, Number(minAgeMs) || 0);
+  const [files] = await bucket.getFiles({ prefix });
+  const stats = { scanned: 0, accepted: 0, rejected: 0, deferred: 0 };
+
+  // Age filter first, so a settled bucket costs listing only.
+  const candidates = files.filter((file) => {
+    if (!file.name || !file.name.startsWith('uploads/')) return false;
+    const meta = file.metadata || {};
+    const created = Date.parse(meta.timeCreated || meta.updated || '');
+    // Too fresh: the storage trigger is probably still working on it.
+    return !(Number.isFinite(created) && created > cutoff);
+  });
+
+  // Most objects in a healthy bucket are already settled. Weed them out with batched
+  // getAll reads (a few round trips) instead of one sequential read per object — the
+  // scheduled sweep has to finish inside its timeout even with a full event's photos.
+  const BATCH = 300;
+  const unsettled = [];
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const slice = candidates.slice(i, i + BATCH);
+    const parsed = slice.map((file) => UPLOAD_PATH.exec(file.name));
+    const refs = parsed.filter(Boolean).map((p) => db.doc(`results/${p[2]}`));
+    const snaps = refs.length ? await db.getAll(...refs) : [];
+    let seen = 0;
+    slice.forEach((file, idx) => {
+      // A malformed path has no uuid to look up — hand it straight to the pipeline,
+      // which deletes it and reports 'invalid' exactly as the trigger would.
+      if (!parsed[idx]) { unsettled.push(file); return; }
+      const snap = snaps[seen];
+      seen += 1;
+      if (!snap.exists) unsettled.push(file);
+    });
+  }
+
+  for (const file of unsettled) {
+    const meta = file.metadata || {};
+    stats.scanned += 1;
+    try {
+      const outcome = await processUpload({
+        bucketName: bucket.name,
+        filePath: file.name,
+        size: meta.size,
+        metadata: meta.metadata,
+      });
+      if (outcome.status === 'accepted') stats.accepted += 1;
+      else if (outcome.status === 'rejected') stats.rejected += 1;
+      else if (outcome.status === 'deferred') stats.deferred += 1;
+    } catch (err) {
+      // One poisoned object must never stop the sweep: the rest of the film matters.
+      logger.error('reconcile failed for object', { filePath: file.name, err: String(err) });
+    }
+  }
+  logger.info('reconcile sweep complete', { ...stats, prefix, total: files.length });
+  return stats;
+}
+
+/**
+ * Scheduled safety net (CONTRACTS §5). Every 15 minutes, anything stranded for more
+ * than 5 minutes gets another run through the pipeline. Deferred (paused) objects are
+ * simply deferred again until the admin resumes, then accepted.
+ */
+exports.reconcileUploads = onSchedule(
+  { region: 'us-central1', schedule: 'every 15 minutes', memory: '512MiB', timeoutSeconds: 540 },
+  async () => { await sweepUploads(); }
+);
+
+/**
+ * Admin-triggered version of the same sweep — the emergency "send everything now"
+ * button, and the only way tests can exercise reconciliation (the emulator never fires
+ * schedules). `minAgeMs` / `prefix` are call-scoped knobs, NOT configuration: they let
+ * an admin (or a test) target a sweep without touching `config/event`.
+ */
+exports.reconcileNow = onCall(
+  { region: 'us-central1', memory: '512MiB', timeoutSeconds: 540 },
+  async (request) => {
+    if (!request.auth || request.auth.token.admin !== true) {
+      throw new HttpsError('permission-denied', 'Admin only.');
+    }
+    const data = request.data && typeof request.data === 'object' ? request.data : {};
+    const minAgeMs = Number.isFinite(Number(data.minAgeMs))
+      ? Math.max(0, Number(data.minAgeMs)) : RECONCILE_MIN_AGE_MS;
+    const prefix = typeof data.prefix === 'string' && data.prefix.startsWith('uploads/')
+      ? data.prefix : 'uploads/';
+    const stats = await sweepUploads({ minAgeMs, prefix });
+    logger.info('reconcileNow', { actorUid: request.auth.uid, ...stats });
+    return stats;
+  }
+);
 
 const PIN_WINDOW_MS = 15 * 60 * 1000;
 const PIN_MAX_FAILS = 5;

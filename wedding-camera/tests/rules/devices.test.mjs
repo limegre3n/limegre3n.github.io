@@ -2,7 +2,9 @@
 import { test, before, after, describe } from 'node:test';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, collection } from 'firebase/firestore';
-import { makeEnv, seedConfig, seedDevice, devicePayload, uid, DEFAULT_SNAPS } from './helpers.mjs';
+import {
+  makeEnv, seedConfig, seedDevice, devicePayload, patchConfig, eventConfig, uid, DEFAULT_SNAPS,
+} from './helpers.mjs';
 
 let env;
 before(async () => { env = await makeEnv('dev'); await seedConfig(env); });
@@ -68,6 +70,41 @@ describe('devices: create', () => {
   test('non-timestamp createdAt is rejected', async () => {
     const u = uid('g');
     await assertFails(setDoc(doc(asGuest(u), 'devices', u), devicePayload({ createdAt: 'yesterday' })));
+  });
+
+  /**
+   * Joining is window-gated; uploading is not (CONTRACTS §2/§5). A leaked QR code must
+   * not mint new devices before or after the event — that abuse control lives HERE so
+   * the finalize function can keep accepting late film from devices that already exist.
+   */
+  test('a device cannot be created after the event window closes', async () => {
+    const fixture = eventConfig();
+    try {
+      await patchConfig(env, { endAt: new Date(Date.now() - 60 * 60 * 1000) });
+      const late = uid('g');
+      await assertFails(setDoc(doc(asGuest(late), 'devices', late), devicePayload()));
+    } finally {
+      await patchConfig(env, { startAt: fixture.startAt, endAt: fixture.endAt });
+    }
+    // Restored window → the same create succeeds, proving the window was the only reason.
+    const inWindow = uid('g');
+    await assertSucceeds(setDoc(doc(asGuest(inWindow), 'devices', inWindow), devicePayload()));
+  });
+
+  test('a device cannot be created before the event window opens', async () => {
+    const fixture = eventConfig();
+    try {
+      await patchConfig(env, {
+        startAt: new Date(Date.now() + 60 * 60 * 1000),
+        endAt: new Date(Date.now() + 25 * 60 * 60 * 1000),
+      });
+      const early = uid('g');
+      await assertFails(setDoc(doc(asGuest(early), 'devices', early), devicePayload()));
+    } finally {
+      await patchConfig(env, { startAt: fixture.startAt, endAt: fixture.endAt });
+    }
+    const inWindow = uid('g');
+    await assertSucceeds(setDoc(doc(asGuest(inWindow), 'devices', inWindow), devicePayload()));
   });
 });
 
