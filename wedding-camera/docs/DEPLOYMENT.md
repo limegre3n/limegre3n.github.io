@@ -172,10 +172,12 @@ What to expect:
 **Required IAM grant for ZIP downloads** (signed URLs need it):
 1. Open https://console.cloud.google.com → select your project (top bar).
 2. ☰ menu → **IAM & Admin → IAM**.
-3. Find the principal ending in **`@appspot.gserviceaccount.com`** (the App Engine default
-   service account) → click the **pencil** (Edit principal).
+3. Find the principal ending in **`-compute@developer.gserviceaccount.com`** (the "Default
+   compute service account" — this is the identity 2nd-generation Cloud Functions run as)
+   → click the **pencil** (Edit principal).
 4. **Add another role** → search **Service Account Token Creator** → select → **Save**.
    Without this, the admin **Download ZIP** button fails with a signing error.
+   (Granting it to the `@appspot.gserviceaccount.com` account as well does no harm.)
 
 ## Step 6 — Enter the real event configuration
 
