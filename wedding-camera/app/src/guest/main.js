@@ -769,11 +769,14 @@ function renderTerminal(kind) {
   inner.append(el('h2', {}, spec.title));
   inner.append(el('p', { class: 'muted' }, spec.body(state.cfg)));
 
-  const pending = queue.pendingCount;
-  if (pending > 0) {
-    inner.append(el('p', { class: 'status-line' },
-      `${pending} photo${pending > 1 ? 's' : ''} still sending — keep this page open.`));
-  }
+  // UPLOAD-005 + GUEST-004: uploads keep draining behind these cards (and a pause
+  // now DEFERS rather than rejects, CONTRACTS §5), so the count must be live here —
+  // this is exactly where a photo is most likely to still be in flight.
+  const status = el('p', { class: 'status-line', role: 'status' });
+  const offlineHint = el('p', { class: 'notice', hidden: true },
+    'No signal right now — will send when signal returns.');
+  inner.append(status, offlineHint);
+
   if (spec.retry) {
     const retry = el('button', { type: 'button', class: 'btn btn--primary' }, 'Try again');
     retry.addEventListener('click', () => location.reload());
@@ -781,6 +784,34 @@ function renderTerminal(kind) {
   }
   mount(card);
   announce(`${spec.title} ${spec.body(state.cfg)}`);
+
+  // Only claim "all sent" once this card has actually watched something drain —
+  // a guest who never shot anything should not be told their photos went out.
+  let sawPending = queue.pendingCount > 0;
+
+  const update = () => {
+    const pending = queue.pendingCount;
+    const online = navigator.onLine !== false;
+    if (pending > 0) sawPending = true;
+    offlineHint.hidden = online || pending === 0;
+    if (pending > 0) {
+      status.textContent = online
+        ? `${pending} photo${pending > 1 ? 's' : ''} still sending — keep this page open.`
+        : `${pending} photo${pending > 1 ? 's' : ''} waiting for signal — keep this page open.`;
+    } else {
+      status.textContent = sawPending ? 'All photos sent. ✓' : '';
+    }
+    if (status.textContent) announce(status.textContent);
+  };
+
+  refreshChrome = update;
+  on(queue, 'change', (e) => {
+    if (e.detail?.rejection) handleRejection(e.detail.rejection);
+    update();
+  });
+  on(globalThis, 'online', update);
+  on(globalThis, 'offline', update);
+  update();
 }
 
 /* ------------------------------------------- film used up (noSnaps card) */
@@ -918,9 +949,8 @@ function handleRejection(reason, toast) {
     case 'quota':
       if (toast) toast('Your film was already full — that one didn’t make it.');
       break;
-    case 'paused':
-      if (toast) toast('The camera is resting — that photo wasn’t saved.');
-      break;
+    // No 'paused' case: a pause DEFERS server-side (CONTRACTS §5/§6.4) — it is
+    // never written as a results.reason, so the client can never observe it.
     case 'window':
     case 'cap':
       if (toast) toast('The camera has closed — that photo wasn’t saved.');
@@ -950,8 +980,8 @@ async function boot() {
   renderLoading();
 
   state.slug = slugFromPath();
-  if (!state.slug) { state.view = null; await route(); return; }
 
+  let authFailed = false;
   try {
     if (!auth.currentUser) await signInAnonymously(auth);
     await new Promise((resolve, reject) => {
@@ -959,6 +989,22 @@ async function boot() {
     });
   } catch (err) {
     console.error('auth-failed', err);
+    authFailed = true;
+  }
+
+  // UPLOAD-005/009: photos already on this device outrank every gate below. The
+  // queue comes up BEFORE any early return (bad link, auth failure, no config —
+  // e.g. the link reopened with no signal), so the IndexedDB roll is loaded and
+  // the online/beforeunload listeners exist no matter which card we end up on.
+  // init() needs no config, and pump() parks on `auth.currentUser` being null and
+  // retries once sign-in lands (queue.js pump/onAuthStateChanged), so calling it
+  // after a failed sign-in is safe: the film resumes on the next reload with signal.
+  await queue.init().catch((err) => console.warn('queue-init-failed', err));
+
+  // Gate precedence is unchanged: an unusable link is still "invalid link", and a
+  // failed sign-in is still the boot-error card.
+  if (!state.slug) { state.view = null; await route(); return; }
+  if (authFailed) {
     state.bootError = true;
     state.view = null;
     await route();
@@ -983,8 +1029,6 @@ async function boot() {
   document.title = state.cfg.coupleNames
     ? `${state.cfg.coupleNames} — Wedding Camera`
     : 'Wedding Camera';
-
-  await queue.init();
 
   // Live re-evaluation of window/pause (GUEST-004/005, CONTRACTS §7).
   onSnapshot(cfgRef, (snap) => {

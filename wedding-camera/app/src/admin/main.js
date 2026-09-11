@@ -264,6 +264,43 @@ $('release-btn').addEventListener('click', async () => {
   }
 });
 
+/**
+ * Manual reconciliation sweep (UPLOAD-009 / CONTRACTS §5 `reconcileNow`).
+ * Admin-gated and idempotent server-side, so it is safe to press twice and it
+ * deliberately writes NO audit doc (audit actions are a closed rules-enforced set).
+ */
+const RECONCILE_LABEL = 'Deliver pending photos now';
+
+$('reconcile-btn').addEventListener('click', async () => {
+  const btn = $('reconcile-btn');
+  btn.disabled = true;
+  btn.classList.add('spin');
+  btn.textContent = 'Checking uploads…';
+  try {
+    const call = httpsCallable(functions, 'reconcileNow');
+    const res = await call({});
+    const data = res && res.data ? res.data : {};
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const scanned = num(data.scanned);
+    const accepted = num(data.accepted);
+    const deferred = num(data.deferred);
+    const rejected = num(data.rejected);
+    const parts = [
+      `Checked ${scanned} upload${scanned === 1 ? '' : 's'}`,
+      `${accepted} delivered`,
+    ];
+    if (deferred) parts.push(`${deferred} waiting (paused)`);
+    if (rejected) parts.push(`${rejected} not accepted`);
+    toast(parts.join(' · '), accepted ? 'good' : '');
+  } catch (error) {
+    reportError('Could not deliver pending photos', error);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('spin');
+    btn.textContent = RECONCILE_LABEL;
+  }
+});
+
 $('zip-btn').addEventListener('click', async () => {
   const btn = $('zip-btn');
   btn.disabled = true;

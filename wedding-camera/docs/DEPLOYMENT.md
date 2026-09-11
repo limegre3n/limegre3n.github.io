@@ -69,9 +69,13 @@ In the Firebase console, left sidebar → expand **Build**. Do all four:
 1. **Build → Firestore Database → Create database**.
 2. Step "Select edition": keep **Standard edition** → **Next**.
 3. Step "Database ID & location": leave Database ID as **(default)** — do NOT rename it,
-   the app targets the default database. Location: pick a region near the wedding, e.g.
-   `europe-west1` or `us-central1`. **Write the region down** (Storage must match; it
-   cannot be changed later). → **Next**.
+   the app targets the default database. Location: pick a region near the wedding. **The
+   code is configured for `asia-southeast1` (Singapore)** — choose that unless you have a
+   reason not to. If you pick a different region, the Cloud Functions must run in the same
+   region as the Storage bucket: change `REGION` at the top of `functions/index.js` and add
+   `VITE_FB_FUNCTIONS_REGION=<region>` to `app/.env.production` before deploying (otherwise
+   deploy fails with "A function in region X cannot listen to a bucket in region Y").
+   **Write the region down** (Storage must match; it cannot be changed later). → **Next**.
 4. Step "Configure": choose **Start in production mode** → **Create**.
    (Some console versions skip this screen and lock the database down automatically —
    that is fine. Our deploy in Step 5 replaces the rules anyway.)

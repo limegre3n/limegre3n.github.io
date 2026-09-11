@@ -66,6 +66,12 @@
           <button class="btn" type="button" id="release-btn" disabled>Release gallery</button>
           <button class="btn btn-primary" type="button" id="zip-btn">Download ZIP</button>
         </div>
+        <!-- UPLOAD-009: manual reconciliation sweep (CONTRACTS §5 reconcileNow) -->
+        <div class="recover-row">
+          <button class="btn" type="button" id="reconcile-btn"
+                  aria-describedby="reconcile-note">Deliver pending photos now</button>
+          <p class="fine muted recover-note" id="reconcile-note">Photos normally arrive automatically; use this if something looks stuck.</p>
+        </div>
       </div>
 
       <nav class="tabs" role="tablist" aria-label="Sections">

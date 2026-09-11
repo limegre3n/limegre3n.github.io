@@ -24,7 +24,9 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = initializeFirestore(app, { localCache: persistentLocalCache() });
 export const storage = getStorage(app);
-export const functions = getFunctions(app, 'us-central1');
+// Must match REGION in functions/index.js (which must match the Storage bucket's region).
+export const FUNCTIONS_REGION = import.meta.env.VITE_FB_FUNCTIONS_REGION || 'asia-southeast1';
+export const functions = getFunctions(app, FUNCTIONS_REGION);
 
 const useEmulators = import.meta.env.VITE_USE_EMULATORS === '1'
   || ['localhost', '127.0.0.1'].includes(globalThis.location?.hostname);

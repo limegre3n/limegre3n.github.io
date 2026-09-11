@@ -95,7 +95,7 @@ async function adminCall(name, data) {
   const aClientAuth = getAuth(adminClientApp);
   connectAuthEmulator(aClientAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
   await signInWithEmailAndPassword(aClientAuth, email, 'pw123456');
-  const fns = getFunctions(adminClientApp, 'us-central1');
+  const fns = getFunctions(adminClientApp, 'asia-southeast1');
   connectFunctionsEmulator(fns, '127.0.0.1', 5001);
   const res = await httpsCallable(fns, name)(data);
   return res.data;

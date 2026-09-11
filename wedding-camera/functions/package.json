@@ -2,7 +2,7 @@
   "name": "wedding-camera-functions",
   "private": true,
   "type": "commonjs",
-  "engines": { "node": "20" },
+  "engines": { "node": "22" },
   "main": "index.js",
   "dependencies": {
     "archiver": "^7.0.1",

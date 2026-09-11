@@ -152,7 +152,7 @@ async function adminIdToken() {
 /** Runs the admin reconciliation sweep (CONTRACTS §5) against the functions emulator. */
 export async function reconcileNow(data = {}) {
   const token = await adminIdToken();
-  const res = await fetch(`http://127.0.0.1:5001/${PROJECT_ID}/us-central1/reconcileNow`, {
+  const res = await fetch(`http://127.0.0.1:5001/${PROJECT_ID}/asia-southeast1/reconcileNow`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ data }),

@@ -131,6 +131,11 @@ button { font: inherit; color: inherit; }
   .btn-row #zip-btn { grid-column: auto; }
 }
 
+/* recovery sweep (UPLOAD-009): quiet, sits under the pause/release row */
+.recover-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.75rem; }
+.recover-row .btn { flex: 0 0 auto; }
+.recover-note { flex: 1 1 15rem; min-width: 0; margin: 0; text-align: left; }
+
 .tabs { display: flex; gap: 0.4rem; padding: 0.8rem 0 0.2rem; }
 .tab {
   flex: 1; min-height: 44px;

@@ -19,6 +19,14 @@ const crypto = require('node:crypto');
 initializeApp();
 const db = getFirestore();
 
+/**
+ * Deployment region for every function. The storage trigger MUST run in the same
+ * region as the Storage bucket (Google rejects cross-region storage triggers), so this
+ * must equal the bucket's location chosen in the Firebase console. The client mirrors
+ * it via VITE_FB_FUNCTIONS_REGION / FUNCTIONS_REGION in app/src/lib/firebase.js.
+ */
+const REGION = 'asia-southeast1';
+
 const MAX_BYTES = 8 * 1024 * 1024;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UPLOAD_PATH = new RegExp(`^uploads/([^/]+)/(${UUID})$`);
@@ -313,7 +321,7 @@ async function processUpload({ bucketName, filePath, size, metadata }) {
  * at all, so `reconcileUploads` below is the durable safety net, not an optimisation.
  */
 exports.onUploadFinalize = onObjectFinalized(
-  { region: 'us-central1', memory: '512MiB', retry: true },
+  { region: REGION, memory: '512MiB', retry: true },
   async (event) => {
     if (isForeignBucket(event.data.bucket)) {
       logger.debug('ignoring foreign emulator bucket', { bucket: event.data.bucket });
@@ -409,7 +417,7 @@ async function sweepUploads({ minAgeMs = RECONCILE_MIN_AGE_MS, prefix = 'uploads
  * simply deferred again until the admin resumes, then accepted.
  */
 exports.reconcileUploads = onSchedule(
-  { region: 'us-central1', schedule: 'every 15 minutes', memory: '512MiB', timeoutSeconds: 540 },
+  { region: REGION, schedule: 'every 15 minutes', memory: '512MiB', timeoutSeconds: 540 },
   async () => { await sweepUploads(); }
 );
 
@@ -420,7 +428,7 @@ exports.reconcileUploads = onSchedule(
  * an admin (or a test) target a sweep without touching `config/event`.
  */
 exports.reconcileNow = onCall(
-  { region: 'us-central1', memory: '512MiB', timeoutSeconds: 540 },
+  { region: REGION, memory: '512MiB', timeoutSeconds: 540 },
   async (request) => {
     if (!request.auth || request.auth.token.admin !== true) {
       throw new HttpsError('permission-denied', 'Admin only.');
@@ -449,7 +457,7 @@ function digestEquals(a, b) {
   }
 }
 
-exports.verifyGalleryPin = onCall({ region: 'us-central1' }, async (request) => {
+exports.verifyGalleryPin = onCall({ region: REGION }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Sign-in required.');
   const uid = request.auth.uid;
 
@@ -544,7 +552,7 @@ async function exportUrl(bucket, file) {
 }
 
 exports.exportZip = onCall(
-  { region: 'us-central1', memory: '1GiB', timeoutSeconds: 540 },
+  { region: REGION, memory: '1GiB', timeoutSeconds: 540 },
   async (request) => {
     if (!request.auth || request.auth.token.admin !== true) {
       throw new HttpsError('permission-denied', 'Admin only.');

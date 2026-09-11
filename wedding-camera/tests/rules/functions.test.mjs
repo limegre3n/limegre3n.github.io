@@ -55,7 +55,7 @@ function newClient() {
   clientApps.push(app);
   const auth = getAuth(app);
   connectAuthEmulator(auth, `http://${EMU.host}:${EMU.authPort}`, { disableWarnings: true });
-  const fns = getFunctions(app, 'us-central1');
+  const fns = getFunctions(app, 'asia-southeast1');
   connectFunctionsEmulator(fns, EMU.host, EMU.functionsPort);
   return {
     auth,
