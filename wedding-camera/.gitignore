@@ -1,5 +1,7 @@
-node_modules/
+node_modules
 app/dist/
+# local scratch scripts (screenshot/diagnostic harnesses)
+.*.tmp.mjs
 .firebase/
 firebase-debug.log
 firestore-debug.log
