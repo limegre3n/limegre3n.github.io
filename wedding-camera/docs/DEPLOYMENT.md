@@ -1,11 +1,17 @@
 # Deployment Guide — from repo to live wedding camera
 
-Follow these steps in order on your own computer (Mac/Windows/Linux). Time: ~45–60 min.
-You need: a Google account, and Node.js 20+ installed (nodejs.org, LTS installer).
+Follow these steps in order on your own computer (Mac/Windows/Linux). Time: ~60 min.
+You need: a Google account, and Node.js 20+ installed (nodejs.org → "LTS" installer).
+Every console instruction below names the exact menu, button, and dialog you will see.
+
+> Order matters: do Step 2 (billing) before Step 3 — new Firebase projects need the
+> Blaze plan before Storage can be enabled.
 
 ---
 
 ## Step 1 — Get the code
+
+Open a terminal (Mac: Terminal app; Windows: PowerShell) and run:
 
 ```bash
 git clone https://github.com/limegre3n/limegre3n.github.io.git
@@ -16,45 +22,102 @@ npm install
 cd functions && npm install && cd ..
 ```
 
-## Step 2 — Create the Firebase project
+If `git` is missing, install it from git-scm.com. Keep this terminal open — later steps
+assume you are inside the `wedding-camera` folder.
 
-1. Go to https://console.firebase.google.com → **Add project**.
-2. Name it (e.g. `alex-sam-wedding`). Disable Google Analytics when asked (we don't use it).
-3. When the project opens, note the **Project ID** (e.g. `alex-sam-wedding-4f2a1`) — you'll
-   need it several times below.
-4. **Upgrade to the Blaze plan** (⚙️ Settings → Usage and billing → Modify plan).
-   Cloud Functions require it. Expected spend is a few dollars total.
-5. **Set a budget alert:** in the same billing area, open the linked Google Cloud billing
-   account → Budgets & alerts → Create budget → $25/month, email alerts at 50/90/100%.
+## Step 2 — Create the Firebase project and enable billing
 
-## Step 3 — Enable the services
+1. Go to https://console.firebase.google.com and sign in.
+2. Click **Create a project** (or **Add project**).
+   - Project name: e.g. `alex-sam-wedding`. Below the name field the console shows the
+     generated **Project ID** (e.g. `alex-sam-wedding-4f2a1`) — you can click the pencil
+     to shorten it. **Write this ID down**; it is used in Steps 4, 5, 7, 8 and 9.
+   - Click **Continue**.
+   - Google Analytics screen: switch **Enable Google Analytics** OFF (we do not use it,
+     and the guest app must load no trackers). Click **Create project**, then **Continue**.
+3. **Upgrade to Blaze (pay as you go):**
+   - Bottom-left of the console, click **Spark plan → Upgrade** (or ⚙️ next to
+     "Project Overview" → **Usage and billing** → **Details & settings** → **Modify plan**).
+   - Choose **Blaze**, then **Select plan**.
+   - Pick or create a **Cloud Billing account** and add a payment card. Blaze has no
+     monthly fee — the free tier still applies; expected total for the wedding is a few dollars.
+   - The upgrade dialog offers **"Set a budget alert"** → enter **25** (USD). Click **Continue**,
+     then **Purchase/Confirm**.
+4. **Double-check the budget alert** (in case the dialog skipped it): in the Firebase
+   console → **Usage and billing** → click the linked billing account (opens Google Cloud
+   console) → left menu **Budgets & alerts** → **Create budget** → name "Wedding camera",
+   amount **25**, thresholds 50% / 90% / 100%, tick **Email alerts to billing admins** →
+   **Finish**.
 
-In the Firebase console, left sidebar → **Build**:
+## Step 3 — Enable the four services
 
-1. **Authentication** → Get started → Sign-in method → enable **Anonymous** and
-   **Email/Password**.
-2. **Firestore Database** → Create database → **Production mode** → choose a region
-   close to the wedding (e.g. `europe-west1` or `us-central1`) → Done.
-   ⚠️ Remember the region — Storage should use the same one.
-3. **Storage** → Get started → Production mode → same region as Firestore.
-4. **Hosting** → Get started (you can skip its CLI instructions; we deploy below).
+In the Firebase console, left sidebar → expand **Build**. Do all four:
+
+### 3a. Authentication
+1. **Build → Authentication → Get started**.
+2. Open the **Sign-in method** tab → **Add new provider**.
+3. Choose **Anonymous** → toggle **Enable** ON → **Save**.
+   *(This is what guests use — invisible, no form. Without it nobody can upload.)*
+4. **Add new provider** again → **Email/Password** → toggle **Enable** ON. Leave
+   "Email link (passwordless sign-in)" OFF → **Save**.
+   *(Used only by the couple's admin page.)*
+5. You should now see both providers listed as **Enabled**. Nothing else to do here;
+   `<project-id>.web.app` and `.firebaseapp.com` are already authorized domains.
+   (Only if you later add a custom domain: **Settings** tab → **Authorized domains** → add it.)
+
+### 3b. Firestore Database
+1. **Build → Firestore Database → Create database**.
+2. Step "Select edition": keep **Standard edition** → **Next**.
+3. Step "Database ID & location": leave Database ID as **(default)** — do NOT rename it,
+   the app targets the default database. Location: pick a region near the wedding, e.g.
+   `europe-west1` or `us-central1`. **Write the region down** (Storage must match; it
+   cannot be changed later). → **Next**.
+4. Step "Configure": choose **Start in production mode** → **Create**.
+   (Some console versions skip this screen and lock the database down automatically —
+   that is fine. Our deploy in Step 5 replaces the rules anyway.)
+
+### 3c. Storage
+1. **Build → Storage → Get started**.
+2. Dialog "Set up Cloud Storage": choose **Start in production mode** → **Next**.
+3. Location: choose the **same region** as Firestore (it may already be fixed to the
+   project's default location — that is fine) → **Done**.
+4. The bucket appears with a name like `gs://<project-id>.firebasestorage.app`
+   (older projects: `<project-id>.appspot.com`). **Copy the exact bucket name shown** —
+   you need it in Step 4.
+   If you see "Blaze plan required", finish Step 2 first and come back.
+
+### 3d. Hosting
+1. **Build → Hosting → Get started**.
+2. A wizard shows CLI commands (`npm install -g firebase-tools`, `firebase login`,
+   `firebase init`, `firebase deploy`). **Do not run them** — the repo already contains
+   the hosting configuration and `firebase init` would overwrite it. Click **Next →
+   Next → Continue to console** to dismiss the wizard.
+3. That's it. The live site `https://<project-id>.web.app` is created automatically the
+   first time you deploy in Step 5.
 
 ## Step 4 — Register the web app and configure the build
 
-1. Console → ⚙️ Project settings → General → Your apps → **`</>` (Web)** → nickname
-   "wedding-camera" → Register (skip Hosting checkbox here).
-2. It shows a `firebaseConfig` object. Copy the values into a new file
-   `app/.env.production` (create it inside the `wedding-camera/app/` folder):
+1. Console → ⚙️ (next to "Project Overview") → **Project settings** → **General** tab →
+   scroll to **Your apps** → click the **`</>`** (Web) icon.
+2. App nickname: `wedding-camera`. Leave **"Also set up Firebase Hosting"** unchecked →
+   **Register app**.
+3. The next screen shows a code block containing `const firebaseConfig = { ... }`.
+   Copy the five values into a new file named exactly **`.env.production`** inside the
+   `wedding-camera/app/` folder (create it with any text editor; on Mac, TextEdit →
+   Format → Make Plain Text first):
 
 ```
-VITE_FB_API_KEY=AIza...
-VITE_FB_AUTH_DOMAIN=<project-id>.firebaseapp.com
-VITE_FB_PROJECT_ID=<project-id>
-VITE_FB_STORAGE_BUCKET=<project-id>.appspot.com   # use the exact value shown in the console
-VITE_FB_APP_ID=1:1234567890:web:abcdef123456
+VITE_FB_API_KEY=AIza...                         # from apiKey
+VITE_FB_AUTH_DOMAIN=<project-id>.firebaseapp.com # from authDomain
+VITE_FB_PROJECT_ID=<project-id>                  # from projectId
+VITE_FB_STORAGE_BUCKET=<exact bucket name>        # from storageBucket — matches Step 3c
+VITE_FB_APP_ID=1:1234567890:web:abcdef123456      # from appId
 ```
 
-3. Point the CLI at your project — edit `.firebaserc` (in `wedding-camera/`):
+   Click **Continue to console**. (To see these values again later: Project settings →
+   Your apps → your app → **SDK setup and configuration → Config**.)
+4. Point the CLI at your project: open `wedding-camera/.firebaserc` in a text editor and
+   replace `demo-wedding` with your Project ID:
 
 ```json
 { "projects": { "default": "<project-id>" } }
@@ -62,125 +125,176 @@ VITE_FB_APP_ID=1:1234567890:web:abcdef123456
 
 ## Step 5 — Deploy
 
+In the terminal (inside `wedding-camera/`):
+
 ```bash
-npx firebase login          # opens a browser; sign in with the project's Google account
-npm run build               # builds the frontend into app/dist
-npx firebase deploy         # deploys hosting + rules + functions
+npx firebase login
+```
+A browser tab opens → choose the Google account that owns the project → **Allow**.
+The terminal prints "Success! Logged in as …".
+
+```bash
+npm run build          # compiles the frontend into app/dist
+npx firebase deploy    # hosting + Firestore rules + Storage rules + Cloud Functions
 ```
 
-First-time function deploys can take several minutes and may ask to enable APIs — answer yes.
-When it finishes it prints your **Hosting URL**: `https://<project-id>.web.app`.
+What to expect:
+- The first deploy asks to **enable APIs** (Cloud Functions, Cloud Build, Artifact
+  Registry, Eventarc, Pub/Sub, Cloud Scheduler) — answer **Y**. It can take 5–10 minutes.
+- If it fails with a message about **Eventarc / service agent permissions not yet
+  propagated**, wait two minutes and run `npx firebase deploy` again — this is a
+  known first-deploy race, not a real error.
+- If it asks to **delete functions that exist in the project but not locally**, answer
+  **N** (there should be none on a fresh project anyway).
+- On success it prints **Hosting URL: https://<project-id>.web.app**.
 
-**One IAM grant for ZIP export** (signed download URLs): in Google Cloud console →
-IAM & Admin → IAM → find the service account named like
-`<project-id>@appspot.gserviceaccount.com` → Edit → add role
-**Service Account Token Creator**. Without this, the admin "Download ZIP" button can
-fail with a signing error.
+**Required IAM grant for ZIP downloads** (signed URLs need it):
+1. Open https://console.cloud.google.com → select your project (top bar).
+2. ☰ menu → **IAM & Admin → IAM**.
+3. Find the principal ending in **`@appspot.gserviceaccount.com`** (the App Engine default
+   service account) → click the **pencil** (Edit principal).
+4. **Add another role** → search **Service Account Token Creator** → select → **Save**.
+   Without this, the admin **Download ZIP** button fails with a signing error.
 
-## Step 6 — Create the real event configuration
+## Step 6 — Enter the real event configuration
 
-In Firebase console → Firestore → **Start collection**:
+Firebase console → **Build → Firestore Database → Data** tab. You will create three
+documents. In the Firestore editor, a field is added with **+ Add field**: type the
+field name, pick the **Type** from the dropdown, enter the value, and for `map` fields
+click the small **+** inside the map to add nested fields.
 
-**Document `config/event`** (collection id `config`, document id `event`):
+### 6a. Document `config/event`
+1. Click **+ Start collection** → Collection ID: `config` → **Next**.
+2. Document ID: type `event` (do not use Auto-ID) → add these fields → **Save**:
 
 | Field | Type | Value |
 |---|---|---|
-| slug | string | a random slug, e.g. `k3v9q2m7xw` (letters/digits, ~10 chars — this becomes the QR URL; don't make it guessable) |
+| slug | string | random letters/digits, ~10 chars, e.g. `k3v9q2m7xw` — becomes part of the QR URL; must not be guessable |
 | coupleNames | string | e.g. `Alex & Sam` |
 | eventDateText | string | e.g. `Saturday, 12 September 2026` |
-| startAt | timestamp | ~2 hours before the ceremony |
-| endAt | timestamp | ~noon the day after |
+| startAt | timestamp | ~2 hours before the ceremony (date+time picker; it uses your local time zone) |
+| endAt | timestamp | ~noon the day after the wedding |
 | paused | boolean | `false` |
 | defaultSnaps | number | `10` |
 | galleryReleased | boolean | `false` |
-| theme | map | see below |
+| theme | map | add the nested fields below |
 
-`theme` map fields: `welcomeText` (string), `consentText` (string — keep the consent
-sentence!), `font` (string: `system`, `serif`, `mono`, or `rounded`), `monogramText`
-(string, e.g. `A♥S`), `heroImagePath` (null), and `colors` (map with `bg`, `accent`,
-`text` — hex strings like `#141210`, `#e8b04b`, `#f5efe6`).
+Inside the **theme** map add:
 
-**Document `config/private`** (document id `private`, same collection):
+| Nested field | Type | Value |
+|---|---|---|
+| welcomeText | string | e.g. `Grab the camera and catch the moments we'll miss!` |
+| consentText | string | `Photos you take will be shared with the couple and may appear in the wedding gallery.` (keep a consent sentence — it is the guests' notice) |
+| font | string | one of `system`, `serif`, `mono`, `rounded` |
+| monogramText | string | e.g. `A♥S` (max 16 characters) |
+| heroImagePath | null | (Type: null) |
+| colors | map | nested: `bg` string `#141210`, `accent` string `#e8b04b`, `text` string `#f5efe6` — any hex colours you like |
+
+Behaviour notes: guests can **join** (enter their name) only between `startAt` and
+`endAt`; devices that joined can keep uploading for **7 days after `endAt`** so late
+phones still deliver their photos. `slug` and `defaultSnaps` can only be changed here in
+the console, never from the admin page.
+
+### 6b. Document `config/private`
+Click the `config` collection → **+ Add document** → Document ID `private`:
 
 | Field | Type | Value |
 |---|---|---|
 | eventCap | number | `2500` |
-| galleryPinSalt | string | any random string, e.g. `x91h3` |
-| galleryPinHash | string | see command below |
-| deleteBy | timestamp | ~3 months after the wedding |
+| galleryPinSalt | string | any random text, e.g. `x91h3pq` |
+| galleryPinHash | string | see the command below |
+| deleteBy | timestamp | ~3 months after the wedding (your shutdown date) |
 
-Generate the PIN hash (replace SALT and PIN — PIN is 4–6 digits you'll share with guests
-after the wedding):
+Generate the PIN hash in your terminal — replace `SALT` with the exact salt above and
+`PIN` with a 4–6 digit PIN you will share with guests after the wedding:
 
 ```bash
 node -e "console.log(require('crypto').createHash('sha256').update('SALT'+'PIN').digest('hex'))"
 ```
+Paste the printed 64-character string as `galleryPinHash`.
 
-**Document `counters/event`** (collection `counters`, document `event`):
-one field `photoCount`, number, `0`.
+### 6c. Document `counters/event`
+**+ Start collection** → Collection ID `counters` → Document ID `event` → one field:
+`photoCount`, type **number**, value `0` → **Save**.
 
 ## Step 7 — Create the couple's admin login
 
-Custom claims can't be set from the console, so use the provided script once:
+Admin rights are a "custom claim" that the console cannot set, so run the provided script once:
 
-1. Console → ⚙️ Project settings → **Service accounts** → Generate new private key →
-   save as `sa.json` inside `wedding-camera/` (it's git-ignored; delete it after this step).
-2. Run:
+1. Console → ⚙️ **Project settings → Service accounts** tab → **Generate new private key**
+   → **Generate key**. A JSON file downloads. Rename it `sa.json` and move it into the
+   `wedding-camera/` folder (it is git-ignored). Treat it like a password.
+2. In the terminal:
 
 ```bash
 GOOGLE_APPLICATION_CREDENTIALS=sa.json GCLOUD_PROJECT=<project-id> \
   node scripts/set-admin.js couple@example.com 'a-strong-password'
-rm sa.json
 ```
+(Windows PowerShell: `$env:GOOGLE_APPLICATION_CREDENTIALS="sa.json"; $env:GCLOUD_PROJECT="<project-id>"; node scripts/set-admin.js couple@example.com 'a-strong-password'`)
 
-3. Store the email+password in a password manager on **two** phones.
+   It prints "Admin claim set for couple@example.com".
+3. **Delete the key:** `rm sa.json` (PowerShell: `del sa.json`). You can also revoke it
+   later under Project settings → Service accounts → Manage service account permissions.
+4. Save the email + password in a password manager on **two** phones.
 
-## Step 8 — Verify the live app (smoke test)
+## Step 8 — Verify the live app (smoke test — mandatory)
 
-1. Open `https://<project-id>.web.app/e/<slug>/` on your phone → enter a name →
-   take a test photo.
-2. Open `https://<project-id>.web.app/admin/` → log in → the test photo appears
-   (this proves upload → validation → quota → moderation all work in production).
-   Hide the test photo.
-3. Open `https://<project-id>.web.app/gallery/<slug>/` → should show "still developing".
-4. Airplane-mode test: enable airplane mode, take a photo, watch the "1 sending…" badge,
-   re-enable data → confirm it appears in admin.
-5. Repeat step 1–2 on BOTH an iPhone (Safari) and an Android (Chrome). **This is the
-   mandatory real-device test** — see acceptance criteria in `docs/PRD.md` §8.
+1. On your phone, open `https://<project-id>.web.app/e/<slug>/` (your slug from 6a) →
+   enter a name → take a test photo.
+2. Open `https://<project-id>.web.app/admin/` → sign in → the test photo appears within
+   ~30 seconds. This proves upload → validation → quota → moderation work in production.
+   Tap it to **hide** it.
+3. Open `https://<project-id>.web.app/gallery/<slug>/` → shows "Still developing…".
+4. Airplane-mode test: enable airplane mode → take a photo → the badge says "1 sending…"
+   → disable airplane mode → the photo appears in admin.
+5. Pause test: in admin press **Pause uploads**, take a photo on the phone, press
+   **Resume** → the photo appears within ~15 minutes (deferred, never lost).
+6. Repeat steps 1–2 on BOTH an iPhone (Safari) and an Android phone (Chrome). This is the
+   mandatory real-device test — acceptance criteria are in `docs/PRD.md` §8.
+
+If photos never appear: Firebase console → **Build → Functions → Logs** and look for
+`onUploadFinalize` errors (usually a missing field in 6a or a missing `counters/event`).
 
 ## Step 9 — QR code and printing
 
-1. The QR target is exactly: `https://<project-id>.web.app/e/<slug>/`
-2. Generate a QR (any generator works, e.g. the `qrencode` CLI or a reputable site —
-   the URL is not secret-sensitive beyond the slug, but prefer an offline tool):
+1. The QR target is exactly `https://<project-id>.web.app/e/<slug>/` (trailing slash included).
+2. Generate the image offline in the terminal:
    `npx qrcode -o wedding-qr.png "https://<project-id>.web.app/e/<slug>/"`
-3. Print at ≥4×4 cm, test-scan from paper at arm's length in dim light with both phones.
-4. Print table cards with one line of instructions plus: *"Before you leave, open the
-   camera link once more so your last photos finish sending!"*
+3. Print at ≥ 4 × 4 cm. Test-scan from the printed card at arm's length in dim light with
+   both phones before printing the full batch.
+4. Add one line of copy: *"Scan → type your name → snap 10 photos. Before you leave, open
+   the link once more so your last photos finish sending!"*
 
 ## Step 10 — Optional: custom domain
 
-Firebase console → Hosting → Add custom domain → follow the DNS instructions
-(~$12/yr at any registrar; allow up to 24h for certificates). The `<project-id>.web.app`
-URL keeps working either way.
+Console → **Build → Hosting → Add custom domain** → enter the domain → follow the DNS
+records shown (add them at your registrar) → wait for **Connected** (up to 24 h for the
+certificate). Then also add the domain under **Authentication → Settings → Authorized
+domains**. The `<project-id>.web.app` address keeps working regardless.
 
 ## Wedding day & after
 
-- Day-of checklist: see "Wedding-day quick reference" in `README.md`.
+- Day-of checklist: "Wedding-day quick reference" in `README.md`.
+- If anything looks wrong during the event, press **Pause** in admin — guest photos queue
+  safely (on phones and in storage) and are delivered after **Resume**. Nothing is deleted.
+- Emergency "make everything appear now": the admin page's reconciliation runs every 15
+  minutes automatically; a technical helper can trigger it instantly via the `reconcileNow`
+  function.
 - After the wedding: admin → review/hide → **Release gallery** → share
   `https://<project-id>.web.app/gallery/<slug>/` + the PIN → **Download ZIP** (store two copies).
-- ≤3 months later: run the shutdown steps in `README.md` (export confirmed → delete
-  Storage + Firestore data → delete the project). Put a calendar reminder in now.
+- ≤ 3 months later (your `deleteBy` date): run the shutdown steps in `README.md`.
+  Put the calendar reminder in now.
 
 ## Troubleshooting
 
-- **Deploy fails on functions:** re-run `npx firebase deploy --only functions` — first
-  deploys sometimes race API enablement.
-- **Photos upload but never appear in admin:** check Functions logs (console → Functions
-  → Logs) for `onUploadFinalize` errors; usually a missing `config/event` field or
-  `counters/event` doc.
+- **`firebase deploy` fails on functions the first time:** wait 2 minutes, re-run
+  `npx firebase deploy --only functions` (API/permission propagation race).
+- **Photos upload but never appear in admin:** Functions → Logs → `onUploadFinalize`.
+  Check 6a field names/types exactly, and that `counters/event` exists.
 - **"Download ZIP" errors:** the IAM grant in Step 5 is missing.
 - **Guest page says "link doesn't look right":** the slug in the URL must exactly match
-  `config/event.slug`.
-- **Everything broken mid-event:** press Pause in admin; guests' photos queue on their
-  phones and send after you resume. Photos are not lost.
+  `config/event.slug` (case-sensitive), with the trailing slash.
+- **Guests get "camera isn't open yet / closed":** check `startAt`/`endAt` — the console
+  date picker uses *your* computer's time zone.
+- **Admin page says "Not authorized":** Step 7 was not run for that email, or you signed
+  in with a different address.
