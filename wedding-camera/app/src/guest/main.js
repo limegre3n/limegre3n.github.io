@@ -40,7 +40,7 @@ const state = {
   uid: null,
   camera: null,
   view: null,           // logical view currently mounted
-  cameraError: null,    // 'permissionDenied' | 'cameraUnavailable' | null
+  cameraError: rememberedCameraBlock() ? 'permissionDenied' : null, // 'permissionDenied' | 'cameraUnavailable' | null
   cameraReady: false,   // stream live and delivering frames
   bootError: false,
   locked: false,        // shutter lockout in progress
@@ -100,6 +100,22 @@ function pad2(n) {
 
 function haptic(pattern) {
   try { navigator.vibrate?.(pattern); } catch { /* unsupported */ }
+}
+
+/* A browser that refused the camera prompt once (blocked permission, or Android's
+ * "can't ask while another app draws over the screen") will refuse again on every
+ * visit. Remember it per phone so we lead with the phone-camera path silently; the
+ * fallback card's Try-again clears the memory and re-requests. Storage failures are
+ * ignored — this is a convenience, never a gate. */
+const CAMERA_BLOCK_KEY = 'wc.cameraBlocked';
+function rememberedCameraBlock() {
+  try { return localStorage.getItem(CAMERA_BLOCK_KEY) === '1'; } catch { return false; }
+}
+function rememberCameraBlock(blocked) {
+  try {
+    if (blocked) localStorage.setItem(CAMERA_BLOCK_KEY, '1');
+    else localStorage.removeItem(CAMERA_BLOCK_KEY);
+  } catch { /* ignore */ }
 }
 
 function platform() {
@@ -534,8 +550,8 @@ function renderWelcome() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    // Inside the tap, so Android grants it; iOS Safari simply has no fullscreen.
-    requestImmersive();
+    // Fullscreen is requested on the first shutter tap instead (camera already live),
+    // so it can never interfere with the browser's camera-permission prompt.
     sfx.arm();
     const nickname = input.value.trim().slice(0, 30);
     if (!nickname) {
@@ -571,8 +587,11 @@ function renderWelcome() {
         const now = Date.now();
         const closed = state.cfg?.startAt && state.cfg?.endAt
           && (now < state.cfg.startAt.toMillis() || now > state.cfg.endAt.toMillis());
-        error.textContent = code === 'permission-denied' && closed
-          ? 'The camera isn’t open right now — please try again once the celebration starts.'
+        error.textContent = code === 'permission-denied'
+          ? (closed
+            ? 'The camera isn’t open right now — please try again once the celebration starts.'
+            : 'The camera isn’t accepting new guests right now. Please show this to the couple: '
+              + 'check the opening and closing times in the event settings. (permission-denied)')
           : `Something went wrong — please try again. (${code})`;
         return;
       }
@@ -734,6 +753,7 @@ async function renderViewfinder() {
     console.warn('camera-start-failed', err?.name || err);
     state.cameraError = err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
       ? 'permissionDenied' : 'cameraUnavailable';
+    if (state.cameraError === 'permissionDenied') rememberCameraBlock(true);
     appEl.dataset.camera = 'off';
     await route();
     return;
@@ -1074,6 +1094,7 @@ function renderCameraFallback(kind) {
   retry.addEventListener('click', async () => {
     retry.disabled = true;
     retry.textContent = 'Checking…';
+    rememberCameraBlock(false);
     state.cameraError = null;
     await route(true);
   });

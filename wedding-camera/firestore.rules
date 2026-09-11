@@ -70,8 +70,10 @@ service cloud.firestore {
       // open, so the finalize function can safely keep accepting film from an EXISTING
       // device for days afterwards instead of destroying late uploads.
       allow create: if isSignedIn() && request.auth.uid == uid
-        && request.time >= eventCfg().startAt
-        && request.time <= eventCfg().endAt
+        // Window gate fails OPEN if the console entry is missing or mistyped (e.g. a string):
+        // a config typo must never lock every guest out on the day.
+        && (!(eventCfg().startAt is timestamp) || request.time >= eventCfg().startAt)
+        && (!(eventCfg().endAt is timestamp) || request.time <= eventCfg().endAt)
         && request.resource.data.keys().hasOnly(
              ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
         && request.resource.data.keys().hasAll(

@@ -28,6 +28,9 @@ const db = getFirestore();
 const REGION = 'asia-southeast1';
 
 const MAX_BYTES = 8 * 1024 * 1024;
+/** Config timestamps may be mistyped in the console; never crash on them. */
+const isTs = (v) => !!v && typeof v.toMillis === 'function';
+
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UPLOAD_PATH = new RegExp(`^uploads/([^/]+)/(${UUID})$`);
 /** Last-ditch uuid recovery from a malformed path, so the client still gets a result. */
@@ -264,11 +267,11 @@ async function processUpload({ bucketName, filePath, size, metadata }) {
     //
     // Before startAt is still a hard reject: `firestore.rules` cannot have admitted a
     // device yet, so nothing legitimate can be in flight.
-    if (cfg.startAt && now.toMillis() < cfg.startAt.toMillis()) return { ok: false, reason: 'window' };
+    if (isTs(cfg.startAt) && now.toMillis() < cfg.startAt.toMillis()) return { ok: false, reason: 'window' };
     // After endAt the device is already admitted — its film is real, it is just late.
     // Accept until endAt + UPLOAD_GRACE_MS; only past that is deleting the bytes
     // defensible (the event is long over and the object store is being wound down).
-    if (cfg.endAt && now.toMillis() > cfg.endAt.toMillis() + UPLOAD_GRACE_MS) {
+    if (isTs(cfg.endAt) && now.toMillis() > cfg.endAt.toMillis() + UPLOAD_GRACE_MS) {
       return { ok: false, reason: 'window' };
     }
     // GAP 1: pause DEFERS, it never rejects. No results doc, no delete — the client
