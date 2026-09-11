@@ -106,18 +106,28 @@ In the Firebase console, left sidebar → expand **Build**. Do all four:
    `wedding-camera/app/` folder (create it with any text editor; on Mac, TextEdit →
    Format → Make Plain Text first):
 
+   Mapping: `apiKey` → `VITE_FB_API_KEY`, `authDomain` → `VITE_FB_AUTH_DOMAIN`,
+   `projectId` → `VITE_FB_PROJECT_ID`, `storageBucket` → `VITE_FB_STORAGE_BUCKET`
+   (must match the bucket name from Step 3c), `appId` → `VITE_FB_APP_ID`.
+   The file must contain exactly five lines like these — no quotes, no comments:
+
 ```
-VITE_FB_API_KEY=AIza...                         # from apiKey
-VITE_FB_AUTH_DOMAIN=<project-id>.firebaseapp.com # from authDomain
-VITE_FB_PROJECT_ID=<project-id>                  # from projectId
-VITE_FB_STORAGE_BUCKET=<exact bucket name>        # from storageBucket — matches Step 3c
-VITE_FB_APP_ID=1:1234567890:web:abcdef123456      # from appId
+VITE_FB_API_KEY=AIza...
+VITE_FB_AUTH_DOMAIN=<project-id>.firebaseapp.com
+VITE_FB_PROJECT_ID=<project-id>
+VITE_FB_STORAGE_BUCKET=<project-id>.firebasestorage.app
+VITE_FB_APP_ID=1:1234567890:web:abcdef123456
 ```
 
    Click **Continue to console**. (To see these values again later: Project settings →
    Your apps → your app → **SDK setup and configuration → Config**.)
+
+   ⚠️ Copy only the five **values** (the text inside the quotes) — do not paste the whole
+   JavaScript snippet, and put the file in `wedding-camera/app/`, not in `wedding-camera/`.
+   Ignore `messagingSenderId` and `measurementId`; the app does not use them.
 4. Point the CLI at your project: open `wedding-camera/.firebaserc` in a text editor and
-   replace `demo-wedding` with your Project ID:
+   replace `demo-wedding` with your Project ID — it must be **exactly** the `projectId`
+   value from the same snippet (not the display name you typed when creating the project):
 
 ```json
 { "projects": { "default": "<project-id>" } }
