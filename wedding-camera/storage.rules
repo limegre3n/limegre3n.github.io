@@ -8,8 +8,8 @@ service firebase.storage {
   match /b/{bucket}/o {
 
     function isSignedIn() { return request.auth != null; }
-    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
-    function hasGallery() { return isSignedIn() && request.auth.token.gallery == true; }
+    function isAdmin() { return isSignedIn() && request.auth.token.get('admin', false) == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.get('gallery', false) == true; }
     // The object name IS the photo uuid (no extension) — enforce the shape so the
     // finalize function's path parser and photos/{uuid} lookups always line up.
     function isUuid(s) {

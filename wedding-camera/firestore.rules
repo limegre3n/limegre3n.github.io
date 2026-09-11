@@ -9,8 +9,8 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function isSignedIn() { return request.auth != null; }
-    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
-    function hasGallery() { return isSignedIn() && request.auth.token.gallery == true; }
+    function isAdmin() { return isSignedIn() && request.auth.token.get('admin', false) == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.get('gallery', false) == true; }
     function eventCfg() {
       return get(/databases/$(database)/documents/config/event).data;
     }
