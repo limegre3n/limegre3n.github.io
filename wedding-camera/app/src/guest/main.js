@@ -471,8 +471,9 @@ function renderWelcome() {
     error.textContent = '';
     submit.disabled = true;
     submit.textContent = 'Loading the film…';
+    const deviceRef = doc(db, 'devices', state.uid);
     try {
-      await setDoc(doc(db, 'devices', state.uid), {
+      await setDoc(deviceRef, {
         nickname,
         snapsRemaining: state.cfg.defaultSnaps,
         snapsGranted: 0,
@@ -480,18 +481,38 @@ function renderWelcome() {
         lastSeenAt: serverTimestamp(),
         consentShownAt: serverTimestamp(),
       });
-      state.device = {
-        nickname,
-        snapsRemaining: state.cfg.defaultSnaps,
-        snapsGranted: 0,
-      };
+      state.device = { nickname, snapsRemaining: state.cfg.defaultSnaps, snapsGranted: 0 };
+    } catch (err) {
+      console.error('device-create-failed', err);
+      // A previous attempt may already have registered this phone (create is one-shot in
+      // the rules) — if so, carry on instead of showing a dead-end error.
+      const existing = await getDoc(deviceRef).catch(() => null);
+      if (existing?.exists()) {
+        state.device = existing.data();
+      } else {
+        submit.disabled = false;
+        submit.textContent = 'Load the film';
+        const code = err?.code || err?.name || 'unknown';
+        const now = Date.now();
+        const closed = state.cfg?.startAt && state.cfg?.endAt
+          && (now < state.cfg.startAt.toMillis() || now > state.cfg.endAt.toMillis());
+        error.textContent = code === 'permission-denied' && closed
+          ? 'The camera isn’t open right now — please try again once the celebration starts.'
+          : `Something went wrong — please try again. (${code})`;
+        return;
+      }
+    }
+
+    // Past this point the phone is registered; a camera/render problem must not be
+    // reported as a registration failure (the fallback views handle camera errors).
+    try {
       watchDevice();
       await route();
     } catch (err) {
-      console.error('device-create-failed', err);
+      console.error('post-register-route-failed', err);
       submit.disabled = false;
       submit.textContent = 'Load the film';
-      error.textContent = 'Something went wrong — please try again.';
+      error.textContent = `You’re in — but the camera view hit a snag. Reload the page to continue. (${err?.name || 'error'})`;
     }
   });
 }
