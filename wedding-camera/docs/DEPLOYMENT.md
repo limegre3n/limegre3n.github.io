@@ -179,10 +179,24 @@ What to expect:
 
 ## Step 6 — Enter the real event configuration
 
-Firebase console → **Build → Firestore Database → Data** tab. You will create three
-documents. In the Firestore editor, a field is added with **+ Add field**: type the
-field name, pick the **Type** from the dropdown, enter the value, and for `map` fields
-click the small **+** inside the map to add nested fields.
+**Recommended: run the provisioning script** (it needs the service-account key from Step 7,
+so do Step 7's key download first, then come back):
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=sa.json GCLOUD_PROJECT=<project-id> node scripts/setup-event.js
+```
+(PowerShell: `$env:GOOGLE_APPLICATION_CREDENTIALS="sa.json"; $env:GCLOUD_PROJECT="<project-id>"; node scripts/setup-event.js`)
+
+It asks for the couple's names, date text, opening/closing times, slug, PIN, colours and
+texts — validating each answer — computes the PIN hash itself, shows a summary, and on
+`yes` writes all three documents with the correct types. Re-running it later (e.g. to
+change the closing time) is safe: current values are offered as defaults. It prints the
+guest, admin and gallery URLs at the end. **If you used the script, skip to Step 7.**
+
+**Manual alternative** — Firebase console → **Build → Firestore Database → Data** tab. You
+will create three documents. In the Firestore editor, a field is added with **+ Add field**:
+type the field name, pick the **Type** from the dropdown, enter the value, and for `map`
+fields click the small **+** inside the map to add nested fields.
 
 ### 6a. Document `config/event`
 1. Click **+ Start collection** → Collection ID: `config` → **Next**.
@@ -260,6 +274,19 @@ GOOGLE_APPLICATION_CREDENTIALS=sa.json GCLOUD_PROJECT=<project-id> \
 
 ## Step 8 — Verify the live app (smoke test — mandatory)
 
+**8a. Backend check from your computer** (no phone needed; uses only the public web config):
+
+```bash
+node scripts/smoke-test.js
+```
+It signs in as an anonymous guest, registers a device called "Smoke Test", uploads a tiny
+photo, waits for the finalize function's verdict and checks the quota decrement — every
+line prints ✓ or ✗ with a hint. It requires the event window to be **open** (opening time
+≤ now ≤ closing time); to test before the wedding, temporarily widen the window with
+`scripts/setup-event.js`, then set it back. Afterwards, hide the "Smoke Test" photo in admin.
+
+**8b. Real phones:**
+
 1. On your phone, open `https://<project-id>.web.app/e/<slug>/` (your slug from 6a) →
    enter a name → take a test photo.
 2. Open `https://<project-id>.web.app/admin/` → sign in → the test photo appears within
@@ -279,8 +306,10 @@ If photos never appear: Firebase console → **Build → Functions → Logs** an
 ## Step 9 — QR code and printing
 
 1. The QR target is exactly `https://<project-id>.web.app/e/<slug>/` (trailing slash included).
-2. Generate the image offline in the terminal:
-   `npx qrcode -o wedding-qr.png "https://<project-id>.web.app/e/<slug>/"`
+2. Generate the image in the terminal — it reads the slug from your live config:
+   `node scripts/make-qr.js`
+   This writes `wedding-qr.png` (1200 px, high error-correction) and `wedding-qr.svg`
+   (for a designer/printer) into the `wedding-camera` folder.
 3. Print at ≥ 4 × 4 cm. Test-scan from the printed card at arm's length in dim light with
    both phones before printing the full batch.
 4. Add one line of copy: *"Scan → type your name → snap 10 photos. Before you leave, open

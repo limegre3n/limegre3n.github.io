@@ -16,6 +16,7 @@
     "@playwright/test": "^1.46.0",
     "firebase-admin": "^14.3.0",
     "firebase-tools": "^13.35.1",
+    "qrcode": "^1.5.4",
     "vite": "^5.4.0"
   },
   "dependencies": {
