@@ -6,6 +6,7 @@
  * dim light) and wedding-qr.svg (for designers/printers) into the wedding-camera folder.
  */
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 
 const envPath = new URL('../app/.env.production', import.meta.url);
@@ -32,7 +33,9 @@ if (!/^[A-Za-z0-9]{6,32}$/.test(slug)) { console.error(`Suspicious slug "${slug}
 
 const url = `https://${env.VITE_FB_PROJECT_ID}.web.app/e/${slug}/`;
 const opts = { errorCorrectionLevel: 'H', margin: 2 };
-await QRCode.toFile(new URL('../wedding-qr.png', import.meta.url).pathname, url, { ...opts, width: 1200 });
-writeFileSync(new URL('../wedding-qr.svg', import.meta.url), await QRCode.toString(url, { ...opts, type: 'svg' }));
+const pngPath = fileURLToPath(new URL('../wedding-qr.png', import.meta.url));
+const svgPath = fileURLToPath(new URL('../wedding-qr.svg', import.meta.url));
+await QRCode.toFile(pngPath, url, { ...opts, width: 1200 });
+writeFileSync(svgPath, await QRCode.toString(url, { ...opts, type: 'svg' }));
 console.log(`✓ wedding-qr.png and wedding-qr.svg written for\n  ${url}\nPrint ≥ 4×4 cm and test-scan from paper with an iPhone and an Android before printing the batch.`);
 process.exit(0);
