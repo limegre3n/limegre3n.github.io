@@ -181,10 +181,63 @@ function refreshInkTokens() {
   } catch { /* styling only — never block the camera */ }
 }
 
+/**
+ * iOS Safari tints its toolbar and status bar from <meta name="theme-color">.
+ * Painting it with the couple's background makes the browser chrome blend into
+ * the camera chassis (with viewport-fit=cover + black-translucent in index.html).
+ * Theming stays config-only (D19): the value is the already-validated hex from
+ * config/event.theme.colors.bg — anything else is ignored.
+ */
+function paintBrowserChrome() {
+  try {
+    const bg = state.cfg?.theme?.colors?.bg;
+    if (!/^#[0-9a-fA-F]{3,8}$/.test(String(bg || ''))) return;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', bg);
+  } catch { /* chrome tint is decoration — never block the camera */ }
+}
+
 function paint() {
   if (state.cfg) applyTheme(state.cfg);
   refreshInkTokens();
+  paintBrowserChrome();
 }
+
+/* --------------------------------------------------------- fullscreen */
+/* Android Chrome/Samsung can hide their own chrome; iOS Safari cannot (no
+ * element fullscreen). Every call is fire-and-forget: a rejection must never
+ * interrupt loading the film or taking a photo, and the native-camera fallback
+ * (which drops out of fullscreen when the camera app opens) is left alone.   */
+
+function canFullscreen() {
+  const root = document.documentElement;
+  return !!(document.fullscreenEnabled && typeof root.requestFullscreen === 'function');
+}
+
+function lockPortrait() {
+  try {
+    const p = globalThis.screen?.orientation?.lock?.('portrait');
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch { /* unsupported outside fullscreen / on iOS */ }
+}
+
+function unlockOrientation() {
+  try { globalThis.screen?.orientation?.unlock?.(); } catch { /* unsupported */ }
+}
+
+/** Must be called synchronously inside a user gesture (tap) to be granted. */
+function requestImmersive() {
+  if (!canFullscreen() || document.fullscreenElement) return;
+  try {
+    const p = document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    if (p && typeof p.then === 'function') p.then(lockPortrait, () => {});
+    else lockPortrait();
+  } catch { /* denied — carry on exactly as before */ }
+}
+
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) unlockOrientation();
+});
 
 function mount(...children) {
   appEl.replaceChildren(...children);
@@ -377,7 +430,7 @@ function cardShell(extraClass = '') {
 }
 
 function coupleHeader(inner, { monogram = true } = {}) {
-  if (monogram) inner.append(el('div', { class: 'monogram recess', 'data-theme-monogram': true }));
+  if (monogram) inner.append(el('div', { class: 'monogram', 'data-theme-monogram': true }));
   inner.append(el('h1', { 'data-theme-couple-names': true }));
   inner.append(el('p', { class: 'card__date', 'data-theme-event-date': true }));
   inner.append(el('div', { class: 'card__rule' }));
@@ -425,22 +478,38 @@ function renderLoading() {
 
 function renderWelcome() {
   setDomState('welcome');
-  const { card, inner } = cardShell('card--welcome');
-  coupleHeader(inner);
-  inner.append(el('p', { class: 'welcome', 'data-theme-welcome-text': true }));
+  const snaps = state.cfg?.defaultSnaps ?? 10;
 
-  const chip = el('div', { class: 'film-chip' });
-  chip.append(
-    el('strong', { class: 'digits' }, pad2(state.cfg?.defaultSnaps ?? 10)),
-    el('span', {}, 'exposures · one roll'),
+  const page = el('div', { class: 'page plastic' });
+  page.append(el('div', { class: 'page__leader' }));
+
+  // Header band — monogram, names, date. Names are the only large element.
+  const brand = el('header', { class: 'brand' });
+  brand.append(
+    el('span', { class: 'brand__mono', 'data-theme-monogram': true }),
+    el('h1', { class: 'brand__names', 'data-theme-couple-names': true }),
+    el('p', { class: 'brand__date', 'data-theme-event-date': true }),
   );
-  inner.append(chip);
+
+  const sheet = el('div', { class: 'sheet' });
+  sheet.append(el('p', { class: 'welcome', 'data-theme-welcome-text': true }));
+
+  // Three-step explainer — this is where the roll size lives now (no chip).
+  const steps = el('ol', { class: 'steps3' });
+  for (const [num, label] of [['1', 'Scan'], ['2', `Snap ${snaps}`], ['3', 'See them after the wedding']]) {
+    const item = el('li');
+    item.append(
+      el('span', { class: 'steps3__num', 'aria-hidden': 'true' }, num),
+      el('span', { class: 'steps3__label' }, label),
+    );
+    steps.append(item);
+  }
+  sheet.append(steps);
 
   const form = el('form', { class: 'form', novalidate: true });
   const field = el('div', { class: 'field' });
   const inputId = 'guest-nickname';
-  const label = el('label', { class: 'field__label label-caps', for: inputId },
-    'Who’s behind the camera?');
+  const label = el('label', { class: 'field__label label-caps', for: inputId }, 'Your name');
   const input = el('input', {
     id: inputId,
     type: 'text',
@@ -449,20 +518,24 @@ function renderWelcome() {
     autocapitalize: 'words',
     spellcheck: 'false',
     enterkeyhint: 'go',
-    placeholder: 'Your name',
+    placeholder: 'e.g. Auntie May',
     'aria-describedby': 'nickname-error consent-note',
   });
   const error = el('p', { class: 'field__error', id: 'nickname-error', role: 'alert' });
   field.append(label, input, error);
   const submit = el('button', { type: 'submit', class: 'btn btn--primary' }, 'Load the film');
   form.append(field, submit);
-  inner.append(form);
-  inner.append(el('p', { class: 'consent', id: 'consent-note', 'data-theme-consent-text': true }));
-  mount(card);
+  sheet.append(form);
+
+  page.append(brand, sheet);
+  page.append(el('p', { class: 'consent', id: 'consent-note', 'data-theme-consent-text': true }));
+  mount(page);
   announce('Enter your name to start');
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    // Inside the tap, so Android grants it; iOS Safari simply has no fullscreen.
+    requestImmersive();
     sfx.arm();
     const nickname = input.value.trim().slice(0, 30);
     if (!nickname) {
@@ -539,30 +612,32 @@ async function renderViewfinder() {
   const wind = el('div', { class: 'vf__wind' });
   wind.append(el('div', { class: 'vf__sprockets' }), el('div', { class: 'vf__sprockets' }));
 
+  // Badges live top-left on the glass; nothing else competes with the counter.
   const rail = el('div', { class: 'vf__rail' });
   const badges = badgeRow();
-  rail.append(badges.wrap, el('span', { class: 'vf__plate', 'data-theme-monogram': true }));
+  rail.append(badges.wrap);
 
   stage.append(video, wash, grain, glass);
   for (const c of ['tl', 'tr', 'bl', 'br']) stage.append(el('div', { class: `vf__bracket vf__bracket--${c}` }));
+  // Film date-print in the corner of the frame, not a badge on the chrome.
+  stage.append(el('span', { class: 'vf__stamp', 'data-theme-monogram': true, 'aria-hidden': 'true' }));
   stage.append(blackout, wind, flash, rail);
 
   /* ---- deck (bottom third, one-handed reach) ---- */
   const deck = el('div', { class: 'deck plastic' });
-  const deckTop = el('div', { class: 'deck__top' });
 
+  // One chassis bar: counter window left, secondary control right, same height.
+  const bar = el('div', { class: 'deck__bar' });
   const counter = el('div', { class: 'counter recess' });
-  const dial = el('span', { class: 'counter__dial' });
+  const dial = el('span', { class: 'counter__dial', 'aria-hidden': 'true' });
   const digits = el('span', { class: 'counter__digits digits', 'aria-hidden': 'true' });
   const counterLabel = el('span', { class: 'counter__label label-caps', 'aria-hidden': 'true' }, 'exposures left');
   counter.append(dial, digits, counterLabel);
-
-  const zoomBtn = el('button', {
-    type: 'button', class: 'zoom', 'aria-label': 'Zoom level, 1 times',
-  }, '1×');
-  deckTop.append(counter, zoomBtn);
+  bar.append(counter);
 
   const row = el('div', { class: 'deck__row' });
+  const leftSlot = el('div', { class: 'deck__slot deck__slot--left' });
+  const rightSlot = el('div', { class: 'deck__slot deck__slot--right' });
   const flipBtn = el('button', {
     type: 'button', class: 'ctl', 'aria-label': 'Switch to front camera',
   }, '⟳');
@@ -570,10 +645,35 @@ async function renderViewfinder() {
     type: 'button', class: 'shutter', 'aria-label': 'Take photo',
   });
   const flashBtn = el('button', {
-    type: 'button', class: 'ctl', 'aria-label': 'Flash off', 'aria-pressed': 'false', hidden: true,
+    type: 'button', class: 'ctl', 'aria-label': 'Flash off', 'aria-pressed': 'false',
   }, '⚡');
-  row.append(flipBtn, shutter, flashBtn);
-  deck.append(deckTop, row);
+  const zoomBtn = el('button', {
+    type: 'button', class: 'ctl zoom', 'aria-label': 'Zoom level, 1 times',
+  }, '1×');
+  leftSlot.append(flipBtn);
+  row.append(leftSlot, shutter, rightSlot);
+  deck.append(bar, row);
+
+  /**
+   * The control row always shows three filled slots — [flip] [shutter] [x].
+   * Where flash is available (front camera, or a torch-capable rear track) it
+   * takes the right slot and zoom becomes a pill in the chassis bar; otherwise
+   * zoom takes the right slot and the counter simply fills the bar. No holes,
+   * no floating pills.
+   */
+  function layoutControls(flashAvailable) {
+    if (flashAvailable) {
+      zoomBtn.className = 'zoom zoom--pill';
+      if (zoomBtn.parentElement !== bar) bar.append(zoomBtn);
+      if (flashBtn.parentElement !== rightSlot) rightSlot.append(flashBtn);
+    } else {
+      if (flashBtn.parentElement) flashBtn.remove();
+      zoomBtn.className = 'ctl zoom';
+      if (zoomBtn.parentElement !== rightSlot) rightSlot.append(zoomBtn);
+    }
+    zoomBtn.classList.toggle('on', ZOOM_STEPS[state.zoomIndex] > 1);
+  }
+  layoutControls(false); // torch capability is unknown until the stream is live
 
   vf.append(stage, deck);
   mount(vf);
@@ -650,7 +750,7 @@ async function renderViewfinder() {
   /* ---- flash: torch on rear when capable, screen-flash on front ---- */
   function syncFlashBtn() {
     const front = state.camera.facingMode === 'user';
-    flashBtn.hidden = !front && !state.camera.supportsTorch;
+    layoutControls(front || !!state.camera.supportsTorch);
     flashBtn.classList.toggle('on', state.flashArmed);
     flashBtn.setAttribute('aria-pressed', String(state.flashArmed));
     flashBtn.setAttribute('aria-label', state.flashArmed
@@ -707,6 +807,9 @@ async function renderViewfinder() {
   /* ---- shutter (CAMERA-003 / CAMERA-004: no preview, ever) ---- */
   shutter.addEventListener('click', async () => {
     if (state.locked || snapsLeft() <= 0) return;
+    // Returning guests never see the welcome card, so the first shutter tap is
+    // their first gesture — and re-asks if they left fullscreen (app switch).
+    requestImmersive();
     state.locked = true;
     shutter.disabled = true;
     shutter.dataset.pressed = '1';
