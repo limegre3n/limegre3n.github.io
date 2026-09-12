@@ -75,6 +75,15 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 { eventCap: number /*2500*/, galleryPinHash: string /*sha256(salt+pin) hex*/, galleryPinSalt: string, deleteBy: Timestamp }
 ```
 
+### `config/galleryExport` — server only (NO client read/write, admin included)
+```js
+{ signature: string /*sha256 of the sorted visible photo uuids, ','-joined*/,
+  path: string /*exports/{exportId}.zip*/, count: number, createdAt: Timestamp,
+  building: boolean, buildingSince: Timestamp, buildingSignature: string }  // build lock
+```
+- Written ONLY by `exportGalleryZip`. Caches one shared archive for all gallery viewers;
+  the signed URL is re-minted per call and deliberately never stored.
+
 ### `devices/{uid}` — uid = Anonymous Auth uid
 ```js
 { nickname: string /*1..30 chars*/, snapsRemaining: number, snapsGranted: number,
@@ -115,8 +124,14 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
   target: string|null /*photo uuid or device uid*/, actorUid: string, at: Timestamp }
 ```
 - Create: admin only. No update/delete.
+- The server also writes `action: 'gallery-export'` (Admin SDK, `exportGalleryZip`).
+  That value is deliberately **not** added to the rules enum above, which governs
+  client writes only — no client may claim a gallery export.
 
 ### `pinAttempts/{uid}` — function-managed rate limiting. No client access.
+
+### `galleryExportAttempts/{uid}` — function-managed rate limiting for `exportGalleryZip`.
+No client access.
 
 ## 3. Storage paths & rules behaviour
 
@@ -129,7 +144,9 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
   - **Read**: admin claim only, or gallery claim + released + Firestore
     `photos/{uuid}.status == 'visible'` (cross-service `firestore.get`).
 - `theme/…` — hero/monogram images. Read: any signed-in user. Write: admin.
-- `exports/{exportId}.zip` — ZIP outputs. Read: admin only (served via signed URL from fn).
+- `exports/{exportId}.zip` — ZIP outputs from `exportZip` / `exportGalleryZip`.
+  Read: admin only — gallery viewers get at the archive through the signed URL the
+  callable returns, which bypasses rules; the objects stay unreadable otherwise.
 
 ## 4. Auth & claims
 
@@ -191,6 +208,32 @@ reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) 
 - Admin claim required. Streams all matching `photos` originals into
   `exports/{exportId}.zip` (filename per photo: `YYYYMMDD-HHMMSS_{nickname}_{uuid8}.jpg`),
   returns a signed URL (24h). Writes `audit` entry.
+
+### `exportGalleryZip` — callable `{}` → `{ url: string, count: number }`
+- Requires auth **and** `request.auth.token.gallery === true` (an `admin` claim also
+  passes); anything else → `permission-denied`.
+- `config/event.galleryReleased !== true` → `failed-precondition`
+  ("The gallery is not open yet."), so a claim minted before a re-lock stops working.
+- **Only `status == 'visible'` photos**, always. There is no `includeHidden` switch —
+  a gallery viewer must never reach a moderated-away photo.
+- **Cached** (many guests tap "Download all"): `config/galleryExport` holds the last
+  build keyed by a signature over the sorted visible photo uuids. Same signature and
+  younger than 20h and the object still exists ⇒ the stored `path` is re-signed and
+  returned without rebuilding; otherwise a fresh ZIP is built and the doc overwritten.
+  Signed URLs are never persisted.
+- **Build lock** (same doc: `building`, `buildingSince`, `buildingSignature`): a cold
+  cache would otherwise have every guest in the burst build their own archive. One
+  caller claims the lock and builds; the others poll every 3s for up to 8 minutes and
+  are served the finished archive — waiting costs no rate-limit attempt. The lock is
+  released in a `finally`, and a lock older than 8 minutes is treated as abandoned.
+- The superseded archive is deleted best-effort, but only once it is over an hour old —
+  a guest may still be mid-download on its (24h-valid) URL.
+- **Rate limit**: max 3 *fresh* builds per uid per rolling hour
+  (`galleryExportAttempts/{uid}`); exceeding it → `resource-exhausted`
+  ("Please wait a little before downloading again."). Cache hits are free.
+- Writes an `audit` record `{ action: 'gallery-export', target: exportId, actorUid, at }`.
+- ZIP building (entry names, missing-object skipping) is shared with `exportZip` via
+  `buildZipFromPhotos(photoDocs, exportId)`.
 
 Admin actions hide/unhide/rotate/pause/resume/grant/release are **direct Firestore writes**
 (rules-gated to admin claim) + an `audit` doc written by the admin client in a batch.

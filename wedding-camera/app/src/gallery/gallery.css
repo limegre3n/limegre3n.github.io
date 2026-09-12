@@ -256,12 +256,15 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
 /* ── sticky toolbar ──────────────────────────────────────────────── */
 .toolbar {
   position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  display: grid; gap: 0.5rem;
   padding: 0.55rem 0.85rem;
   background: rgba(246, 244, 241, 0.92);
   -webkit-backdrop-filter: saturate(1.4) blur(12px);
   backdrop-filter: saturate(1.4) blur(12px);
   border-bottom: 1px solid var(--line);
+}
+.toolbar-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
 }
 .toolbar-count {
   font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
@@ -283,6 +286,32 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   box-shadow: 0 1px 2px rgba(25, 23, 21, 0.16);
 }
 .vt-icon { width: 15px; height: 15px; flex: none; stroke-width: 1.6; }
+
+/* ── toolbar actions: Download all (GALLERY-005) · Select (GALLERY-006) ── */
+.toolbar-actions { gap: 0.5rem; }
+.tool-btn {
+  flex: 1 1 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  min-height: 40px; padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tool-btn > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-btn:active { filter: brightness(0.97); }
+.tool-btn:disabled { opacity: 0.58; cursor: default; }
+.tool-btn[aria-pressed="true"] {
+  background: var(--accent-fill); color: var(--on-accent); border-color: transparent;
+}
+.tool-icon { width: 15px; height: 15px; flex: none; stroke-width: 1.7; }
+.tool-spinner {
+  width: 14px; height: 14px; flex: none; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent-strong);
+  animation: spin 0.9s linear infinite;
+}
 
 /* ── the wall ────────────────────────────────────────────────────── */
 .wall { display: grid; }
@@ -341,6 +370,102 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   font-size: 0.78rem; color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+
+/* ── select mode (GALLERY-006) ───────────────────────────────────── */
+/* The badge only exists while selecting, so the album reads unchanged at rest. */
+.shot-check {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.82); color: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(25, 23, 21, 0.28);
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.shot-check svg { width: 13px; height: 13px; stroke-width: 2.8; }
+.wall:not([data-selecting="true"]) .shot-check { display: none; }
+.wall[data-layout="roll"] .shot-check { top: 10px; right: 10px; width: 28px; height: 28px; }
+.wall[data-layout="roll"] .shot-check svg { width: 16px; height: 16px; }
+
+.wall[data-selecting="true"] .shot-frame::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  border-radius: inherit; background: rgba(25, 23, 21, 0.2);
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.wall[data-selecting="true"] .shot[aria-checked="true"] .shot-frame::after {
+  opacity: 1; box-shadow: inset 0 0 0 3px var(--accent-fill);
+}
+.wall[data-selecting="true"] .shot[aria-checked="true"] .shot-check {
+  background: var(--accent-fill); color: var(--on-accent); transform: scale(1.06);
+}
+
+/* ── bottom dock: ZIP-ready banner + selection bar ───────────────── */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  pointer-events: none;
+  padding: 0 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
+}
+.dock-inner { max-width: 860px; margin: 0 auto; display: grid; gap: 0.5rem; }
+.ready, .selbar {
+  pointer-events: auto;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-card);
+  padding: 0.7rem 0.75rem;
+  animation: dock-rise 0.22s ease-out both;
+}
+@keyframes dock-rise {
+  from { transform: translateY(18px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+/* note + dismiss share the top row; the call to action takes the full width
+   below it, so the tap target never competes with the × */
+.ready { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.55rem; align-items: center; }
+.ready-text { grid-column: 1; grid-row: 1; min-width: 0; }
+.ready-note { font-size: 0.86rem; font-weight: 600; letter-spacing: -0.005em; }
+.ready-hint { font-size: 0.74rem; color: var(--ink-3); margin-top: 0.1rem; }
+.ready-dismiss {
+  grid-column: 2; grid-row: 1;
+  width: 30px; height: 30px; padding: 7px;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(25, 23, 21, 0.06); color: var(--ink-2);
+}
+.btn-ready {
+  grid-column: 1 / -1; grid-row: 2; margin: 0; min-height: 48px; padding: 0.7rem 1rem;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
+  background: var(--accent-fill); color: var(--on-accent);
+  text-decoration: none; font-size: 0.96rem;
+  box-shadow: 0 8px 20px -14px rgba(25, 23, 21, 0.8);
+}
+.btn-ready:active { filter: brightness(0.96); }
+
+.selbar { display: grid; gap: 0.55rem; }
+.selbar-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.selbar-count {
+  font-size: 0.86rem; font-weight: 600; font-variant-numeric: tabular-nums;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.selbar-link {
+  flex: none; min-height: 32px; padding: 0.25rem 0.2rem;
+  border: 0; background: transparent; cursor: pointer;
+  font-size: 0.82rem; font-weight: 600; color: var(--accent-strong);
+}
+.selbar-actions { display: flex; gap: 0.5rem; }
+.selbar-btn {
+  flex: 1 1 0; min-width: 0; min-height: 48px; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--card); color: var(--ink);
+  font-size: 0.94rem; font-weight: 600; cursor: pointer;
+}
+.selbar-go {
+  flex: 1.5 1 0; background: var(--accent-fill); color: var(--on-accent); border-color: transparent;
+}
+.selbar-btn:disabled { opacity: 0.5; cursor: default; }
+.selbar-btn:active:not(:disabled) { filter: brightness(0.97); }
+
+/* keeps the last row of the roll — and any toast — clear of the dock */
+#app.has-dock .wall-foot { padding-bottom: calc(12rem + env(safe-area-inset-bottom)); }
+#app.has-dock ~ .toasts { bottom: calc(9.5rem + env(safe-area-inset-bottom)); }
 
 .empty {
   margin: 3rem auto; padding: 0 1.5rem; max-width: 22rem;
@@ -448,4 +573,6 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   }
   .shot-frame::before { background: var(--tile); }
   .develop-frame { opacity: 0.75; }
+  /* no slide-up for the dock (GALLERY-005/006) */
+  .ready, .selbar { animation: none; }
 }

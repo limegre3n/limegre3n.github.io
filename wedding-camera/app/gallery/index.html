@@ -114,22 +114,41 @@
       </header>
 
       <div class="toolbar">
-        <p class="toolbar-count" id="toolbar-count"></p>
-        <div class="viewtoggle" role="group" aria-label="Photo size">
-          <button class="vt-btn" type="button" id="view-grid" aria-pressed="true">
-            <svg class="vt-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <rect x="3" y="3" width="7" height="7" rx="1.4"></rect>
-              <rect x="14" y="3" width="7" height="7" rx="1.4"></rect>
-              <rect x="3" y="14" width="7" height="7" rx="1.4"></rect>
-              <rect x="14" y="14" width="7" height="7" rx="1.4"></rect>
+        <div class="toolbar-row">
+          <p class="toolbar-count" id="toolbar-count"></p>
+          <div class="viewtoggle" role="group" aria-label="Photo size">
+            <button class="vt-btn" type="button" id="view-grid" aria-pressed="true">
+              <svg class="vt-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="3" y="3" width="7" height="7" rx="1.4"></rect>
+                <rect x="14" y="3" width="7" height="7" rx="1.4"></rect>
+                <rect x="3" y="14" width="7" height="7" rx="1.4"></rect>
+                <rect x="14" y="14" width="7" height="7" rx="1.4"></rect>
+              </svg>
+              <span>Grid</span>
+            </button>
+            <button class="vt-btn" type="button" id="view-roll" aria-pressed="false">
+              <svg class="vt-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="3.5" y="4" width="17" height="16" rx="1.6"></rect>
+              </svg>
+              <span>Large</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- GALLERY-005 (whole album) + GALLERY-006 (pick a few) -->
+        <div class="toolbar-row toolbar-actions">
+          <button class="tool-btn" type="button" id="download-all">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 4v10m0 0l-4-4m4 4l4-4M5 18h14"></path>
             </svg>
-            <span>Grid</span>
+            <span id="download-all-label">Download all</span>
+            <span class="tool-spinner" id="download-all-spinner" aria-hidden="true" hidden></span>
           </button>
-          <button class="vt-btn" type="button" id="view-roll" aria-pressed="false">
-            <svg class="vt-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <rect x="3.5" y="4" width="17" height="16" rx="1.6"></rect>
+          <button class="tool-btn" type="button" id="select-toggle" aria-pressed="false">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M20.5 6.5L10 17l-5-5"></path>
             </svg>
-            <span>Large</span>
+            <span id="select-toggle-label">Select</span>
           </button>
         </div>
       </div>
@@ -148,8 +167,37 @@
         <p class="card-note">The couple are still adding frames. Check back soon.</p>
       </div>
 
-      <footer class="wall-foot">Tap any photo to see it full screen and save it.</footer>
+      <footer class="wall-foot" id="wall-foot">Tap any photo to see it full screen and save it.</footer>
     </section>
+  </div>
+
+  <!-- bottom dock: ZIP-ready banner (GALLERY-005/006) over the selection bar (GALLERY-006) -->
+  <div class="dock" id="dock">
+    <div class="dock-inner">
+      <div class="ready" id="ready-banner" role="status" hidden>
+        <div class="ready-text">
+          <p class="ready-note" id="ready-note"></p>
+          <p class="ready-hint" id="ready-hint" hidden>Saves to Files &rsaquo; Downloads</p>
+        </div>
+        <a class="btn btn-ready" id="ready-link" download href="#"><span id="ready-label"></span></a>
+        <button class="ready-dismiss" type="button" id="ready-dismiss" aria-label="Dismiss download">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="selbar" id="selbar" role="group" aria-label="Selected photos" hidden>
+        <div class="selbar-head">
+          <p class="selbar-count" id="selbar-count" aria-live="polite">0 selected</p>
+          <button class="selbar-link" type="button" id="sel-all">Select all</button>
+        </div>
+        <div class="selbar-actions">
+          <button class="selbar-btn" type="button" id="sel-cancel">Cancel</button>
+          <button class="selbar-btn selbar-go" type="button" id="sel-download" disabled>Download</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- photo detail + download (GALLERY-003) -->
@@ -191,6 +239,13 @@
       <p class="error lb-error" id="lightbox-error" role="alert" hidden></p>
     </div>
   </div>
+
+  <!-- selection badge cloned into each tile in select mode (GALLERY-006) -->
+  <template id="tpl-shot-check">
+    <span class="shot-check" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><path d="M20 6.5L9.5 17l-5-5"></path></svg>
+    </span>
+  </template>
 
   <!-- cloned for tiles whose photo could not be fetched (never a raw error label) -->
   <template id="tpl-shot-fallback">

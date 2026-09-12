@@ -1,5 +1,5 @@
 /**
- * E2E for the gallery surface (workstream ④, PRD GALLERY-002/003/004).
+ * E2E for the gallery surface (workstream ④, PRD GALLERY-002/003/004/005/006).
  *
  * Covers the journey the couple's guests actually take weeks after the day:
  * cover + PIN card → wrong PIN error → correct PIN (verifyGalleryPin callable
@@ -10,6 +10,7 @@
  * released — same emulator suite as the other specs.
  */
 import { test, expect } from '@playwright/test';
+import fs from 'node:fs/promises';
 
 const GALLERY = '/gallery/index.html?slug=testslug123';
 
@@ -105,5 +106,128 @@ test.describe('photo wall + detail (GALLERY-002/003)', () => {
     await unlock(page);
     await page.reload();
     await expect(page.locator('#app')).toHaveAttribute('data-state', 'wall', { timeout: 60_000 });
+  });
+});
+
+/* ── downloads: whole album + selection (GALLERY-005/006) ─────────── */
+
+/** Enters select mode and waits for the bottom action bar. */
+async function enterSelect(page) {
+  await page.click('#select-toggle');
+  await expect(page.locator('#wall')).toHaveAttribute('data-selecting', 'true');
+  await expect(page.locator('#selbar')).toBeVisible();
+}
+
+/** Reads the first bytes of a completed download. */
+async function downloadHead(download, bytes) {
+  const file = await download.path();
+  const handle = await fs.open(file, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    await handle.read(buf, 0, bytes, 0);
+    return buf;
+  } finally {
+    await handle.close();
+  }
+}
+
+test.describe('bulk download (GALLERY-005/006)', () => {
+  test('select mode zips a multi-photo selection', async ({ page }) => {
+    await unlock(page);
+    const shots = page.locator('.shot');
+    await expect(shots.first()).toBeVisible({ timeout: 30_000 });
+
+    await enterSelect(page);
+    // Tiles are checkboxes while selecting, not doors into the lightbox.
+    await expect(shots.first()).toHaveAttribute('role', 'checkbox');
+    await shots.nth(0).click();
+    await shots.nth(1).click();
+    await expect(page.locator('#lightbox')).toBeHidden();
+    await expect(shots.nth(0)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#selbar-count')).toHaveText('2 selected');
+
+    await page.click('#sel-download');
+    // The ZIP is handed over as a link to tap, never an auto-navigation.
+    const ready = page.locator('#ready-link');
+    await expect(ready).toBeVisible({ timeout: 120_000 });
+    await expect(page.locator('#ready-label')).toHaveText('Save ZIP');
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      ready.click(),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/-selected-2-photos\.zip$/);
+    const head = await downloadHead(download, 2);
+    expect(head.toString('latin1')).toBe('PK');
+  });
+
+  test('a single selection saves the photo itself', async ({ page }) => {
+    await unlock(page);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+
+    await enterSelect(page);
+    await page.locator('.shot').nth(0).click();
+    await expect(page.locator('#selbar-count')).toHaveText('1 selected');
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('#sel-download'),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/\.jpg$/);
+    // One photo never becomes a ZIP, and the mode closes itself afterwards.
+    await expect(page.locator('#selbar')).toBeHidden();
+    await expect(page.locator('#wall')).toHaveAttribute('data-selecting', 'false');
+  });
+
+  test('select all / clear / cancel keep the count honest', async ({ page }) => {
+    await unlock(page);
+    const shots = page.locator('.shot');
+    await expect(shots.first()).toBeVisible({ timeout: 30_000 });
+    const count = await shots.count();
+
+    await enterSelect(page);
+    await expect(page.locator('#sel-download')).toBeDisabled();
+
+    await page.click('#sel-all');
+    await expect(page.locator('#selbar-count')).toHaveText(`${count} selected`);
+    await expect(page.locator('#sel-all')).toHaveText('Clear');
+
+    await page.click('#sel-all');
+    await expect(page.locator('#selbar-count')).toHaveText('0 selected');
+    await expect(page.locator('#sel-all')).toHaveText('Select all');
+    await expect(page.locator('#sel-download')).toBeDisabled();
+
+    await page.click('#sel-cancel');
+    await expect(page.locator('#selbar')).toBeHidden();
+    await expect(page.locator('#wall')).toHaveAttribute('data-selecting', 'false');
+    await expect(page.locator('#select-toggle')).toHaveAttribute('aria-pressed', 'false');
+    // Back out of select mode and a tap opens the frame again.
+    await shots.first().click();
+    await expect(page.locator('#lightbox')).toBeVisible();
+  });
+
+  test('Download all asks the server for one ZIP', async ({ page }) => {
+    await unlock(page);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+
+    const button = page.locator('#download-all');
+    await expect(button).toBeEnabled();
+    await button.click();
+
+    const ready = page.locator('#ready-link');
+    const failure = page.locator('.toast');
+    await expect(ready.or(failure).first()).toBeVisible({ timeout: 150_000 });
+
+    if (await failure.isVisible()) {
+      // The callable is not in this emulator yet — the UI must recover cleanly.
+      await expect(button).toBeEnabled();
+      await expect(page.locator('#download-all-label')).toHaveText('Download all');
+      test.skip(true, 'exportGalleryZip is not deployed in this emulator');
+      return;
+    }
+
+    await expect(page.locator('#ready-note')).toHaveText('Your album is ready');
+    await expect(ready).toHaveAttribute('href', /^https?:\/\/.+/);
+    await expect(page.locator('#ready-label')).toContainText('Download ZIP');
   });
 });

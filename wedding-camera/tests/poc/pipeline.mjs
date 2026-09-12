@@ -12,6 +12,9 @@
  *      → unpause → admin reconcileNow sweep → accepted, exactly one snap consumed
  *   8. quota exhausted → upload rejected 'quota'
  *   9. guest cannot read config/private
+ *  10. gallery "Download all" (exportGalleryZip): claim gate, release gate,
+ *      visible-only ZIP, the shared server-side cache on a second call, and the
+ *      build lock that collapses a concurrent cold-cache burst into one build
  *
  * Usage: node tests/poc/pipeline.mjs   (emulators must be running + seeded)
  */
@@ -193,6 +196,154 @@ check('exhausted quota rejects upload', res4.ok === false && res4.reason === 'qu
 let privErr = null;
 try { await getDoc(doc(db, 'config', 'private')); } catch (e) { privErr = e; }
 check('config/private unreadable by guests', privErr?.code === 'permission-denied', String(privErr?.code));
+
+// 10. Gallery "Download all pictures" — exportGalleryZip (claim gate, release gate,
+//     visible-only contents, and the shared server-side cache).
+
+/** A throwaway anonymous identity, optionally carrying the `gallery` claim. */
+async function galleryClient(withClaim) {
+  const clientApp = initializeApp({
+    apiKey: 'demo-key', projectId: 'demo-wedding',
+    storageBucket: 'demo-wedding.appspot.com', appId: 'demo-app',
+  }, `poc-gal-${crypto.randomUUID()}`);
+  const cAuth = getAuth(clientApp);
+  connectAuthEmulator(cAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  const cred = await signInAnonymously(cAuth);
+  if (withClaim) {
+    await aauth.setCustomUserClaims(cred.user.uid, { gallery: true });
+    await cAuth.currentUser.getIdToken(true); // force a token carrying the claim
+  }
+  const fns = getFunctions(clientApp, 'asia-southeast1');
+  connectFunctionsEmulator(fns, '127.0.0.1', 5001);
+  return {
+    uid: cred.user.uid,
+    call: (name, data) => httpsCallable(fns, name)(data).then((r) => r.data),
+  };
+}
+
+/**
+ * Fetches the export. In the emulator `exportUrl()` falls back to the unsigned media
+ * endpoint, which is rules-evaluated (exports/ is admin-read-only) — the emulator's
+ * `Bearer owner` token stands in for the signature. Production returns a real V4
+ * signed URL that needs no header at all.
+ *
+ * NEVER fetch this URL without an Authorization header: the Storage emulator's rules
+ * evaluator dereferences request.auth and CRASHES the whole emulator on an anonymous
+ * GET of an exports/ object.
+ */
+async function fetchExport(url) {
+  const res = await fetch(url, { headers: { Authorization: 'Bearer owner' } });
+  if (!res.ok) return { status: res.status, head: null, bytes: 0 };
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { status: res.status, head: buf.subarray(0, 2), bytes: buf.length };
+}
+
+// (a) no gallery claim → permission-denied, no URL handed out.
+const stranger = await galleryClient(false);
+let galDeniedErr = null;
+try { await stranger.call('exportGalleryZip', {}); } catch (e) { galDeniedErr = e; }
+check('exportGalleryZip denies a viewer without the gallery claim',
+  galDeniedErr?.code === 'functions/permission-denied', String(galDeniedErr?.code));
+
+// (b) gallery claim but the gallery is locked → failed-precondition.
+const viewer = await galleryClient(true);
+const releasedBefore = (await adb.doc('config/event').get()).data().galleryReleased;
+await adb.doc('config/event').update({ galleryReleased: false });
+let galLockedErr = null;
+try { await viewer.call('exportGalleryZip', {}); } catch (e) { galLockedErr = e; }
+check('exportGalleryZip refuses while the gallery is not released',
+  galLockedErr?.code === 'functions/failed-precondition', String(galLockedErr?.code));
+
+// (c) released → a fresh build with exactly the visible photos.
+await adb.doc('config/event').update({ galleryReleased: true });
+// Drop any cache left by an earlier run so this really exercises the build path.
+await adb.doc('config/galleryExport').delete().catch(() => {});
+
+const visibleSnap = await adb.collection('photos').where('status', '==', 'visible').get();
+// Orphaned docs (an object another suite cleaned up) are skipped by the builder, so the
+// expectation is computed the same way rather than from the doc count alone.
+const presentFlags = await Promise.all(visibleSnap.docs.map(async (d) => {
+  const sp = d.data().storagePath;
+  if (typeof sp !== 'string' || !sp) return false;
+  const [exists] = await abucket.file(sp).exists().catch(() => [false]);
+  return exists;
+}));
+const expectedCount = presentFlags.filter(Boolean).length;
+const hiddenSnap = await adb.collection('photos').where('status', '==', 'hidden').get();
+
+const firstExport = await viewer.call('exportGalleryZip', {});
+check('gallery export returns a download url',
+  typeof firstExport.url === 'string' && firstExport.url.length > 0, String(firstExport.url));
+check('gallery export count equals the visible photos',
+  firstExport.count === expectedCount,
+  `got ${firstExport.count}, expected ${expectedCount} (${visibleSnap.size} visible, ${hiddenSnap.size} hidden)`);
+
+const download = await fetchExport(firstExport.url);
+check('gallery export url serves a real ZIP (PK magic bytes)',
+  download.status === 200 && download.head?.[0] === 0x50 && download.head?.[1] === 0x4b,
+  `status ${download.status}, head ${download.head}`);
+
+const cacheDoc = await adb.doc('config/galleryExport').get();
+const cachedPath = cacheDoc.data()?.path;
+const cachedAt = cacheDoc.data()?.createdAt?.toMillis();
+check('gallery export records its cache metadata server-side',
+  typeof cachedPath === 'string' && cachedPath.startsWith('exports/')
+  && cacheDoc.data().count === expectedCount && typeof cacheDoc.data().signature === 'string',
+  JSON.stringify(cacheDoc.data() || null));
+
+// (d) a second call (different viewer) is served from the cache — same object, no rebuild.
+const viewer2 = await galleryClient(true);
+const secondExport = await viewer2.call('exportGalleryZip', {});
+const cacheAfter = await adb.doc('config/galleryExport').get();
+check('a second gallery export reuses the cached archive (no rebuild)',
+  cacheAfter.data()?.createdAt?.toMillis() === cachedAt && cacheAfter.data()?.path === cachedPath,
+  `path ${cacheAfter.data()?.path} vs ${cachedPath}`);
+check('the cached response points at the same object and count',
+  secondExport.count === firstExport.count
+  && decodeURIComponent(secondExport.url).includes(cachedPath),
+  `count ${secondExport.count}, url ${secondExport.url}`);
+
+/** exports/{exportId}.zip → exportId, which is what the audit record targets. */
+const exportIdOf = (path) => String(path || '').replace(/^exports\//, '').replace(/\.zip$/, '');
+
+// Keyed to the archive that was actually built, not to a caller: under the build lock a
+// caller served by someone else's build correctly writes no audit of its own.
+const galAudit = await adb.collection('audit')
+  .where('action', '==', 'gallery-export').where('target', '==', exportIdOf(cachedPath)).get();
+check('the archive that was built has exactly one audit record',
+  galAudit.size === 1 && typeof galAudit.docs[0]?.data().actorUid === 'string',
+  `got ${galAudit.size} for ${exportIdOf(cachedPath)}`);
+
+// (e) a cold-cache burst collapses into ONE build (the thundering-herd lock).
+await adb.doc('config/galleryExport').delete().catch(() => {});
+const racerA = await galleryClient(true);
+const racerB = await galleryClient(true);
+const [raceA, raceB] = await Promise.all([
+  racerA.call('exportGalleryZip', {}),
+  racerB.call('exportGalleryZip', {}),
+]);
+check('both concurrent gallery exports succeed',
+  typeof raceA.url === 'string' && raceA.url.length > 0
+  && typeof raceB.url === 'string' && raceB.url.length > 0);
+check('both concurrent gallery exports report the same count',
+  raceA.count === raceB.count && raceA.count === expectedCount,
+  `${raceA.count} vs ${raceB.count}, expected ${expectedCount}`);
+const racePath = (await adb.doc('config/galleryExport').get()).data()?.path;
+check('both concurrent callers are handed the same archive object',
+  typeof racePath === 'string'
+  && decodeURIComponent(raceA.url).includes(racePath)
+  && decodeURIComponent(raceB.url).includes(racePath),
+  `path ${racePath}`);
+// One archive, therefore exactly one build, therefore exactly one audit record —
+// whichever caller won the lock. Keyed to the archive so a parallel workstream calling
+// the same function cannot perturb the count.
+const raceAudits = await adb.collection('audit')
+  .where('action', '==', 'gallery-export').where('target', '==', exportIdOf(racePath)).get();
+check('a concurrent burst on a cold cache builds exactly once',
+  raceAudits.size === 1, `${raceAudits.size} audit records for ${exportIdOf(racePath)}`);
+
+// Restore the shared flag for every other suite.
+await adb.doc('config/event').update({ galleryReleased: releasedBefore });
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

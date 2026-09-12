@@ -87,6 +87,23 @@ describe('config/event', () => {
   });
 });
 
+describe('config/galleryExport', () => {
+  // Written by exportGalleryZip (Admin SDK). It names an object under exports/, which
+  // no client may read, so the metadata doc is server-only for admins too.
+  test('no client may read it — not guests, not gallery viewers, not admin', async () => {
+    await assertFails(getDoc(doc(asGuest(), 'config', 'galleryExport')));
+    await assertFails(getDoc(doc(asGallery(), 'config', 'galleryExport')));
+    await assertFails(getDoc(doc(asAdmin(), 'config', 'galleryExport')));
+    await assertFails(getDoc(doc(anon(), 'config', 'galleryExport')));
+  });
+
+  test('no client may write it (cache poisoning)', async () => {
+    await assertFails(setDoc(doc(asAdmin(), 'config', 'galleryExport'), { path: 'exports/x.zip' }));
+    await assertFails(setDoc(doc(asGallery(), 'config', 'galleryExport'), { path: 'exports/x.zip' }));
+    await assertFails(setDoc(doc(asGuest(), 'config', 'galleryExport'), { path: 'exports/x.zip' }));
+  });
+});
+
 describe('config/private', () => {
   test('no client may read it — not guests, not gallery viewers, not admin', async () => {
     await assertFails(getDoc(doc(asGuest(), 'config', 'private')));

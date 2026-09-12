@@ -66,6 +66,10 @@ npm run test:e2e                  # Playwright browser tests (fake camera)
 - **End of night:** remind guests to open the camera link once more before leaving
   so queued photos finish sending.
 - **Day after:** admin → Download ZIP (do this before reviewing — it's the backup).
+- **Guests keeping copies:** once the gallery is released, viewers who entered the PIN
+  get a **Download all pictures** button (only the visible photos, never hidden ones).
+  Everyone shares one archive the server rebuilds at most a few times a day, so the
+  first tap after a moderation change is the slow one.
 
 ## Shutdown (≤3 months after the wedding — required)
 

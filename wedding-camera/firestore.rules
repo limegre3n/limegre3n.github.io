@@ -62,6 +62,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Cached gallery-ZIP metadata written by `exportGalleryZip` (Admin SDK). It names a
+    // storage object under exports/, which no client may read — so the doc itself is
+    // server-only too, for admins as much as for gallery viewers.
+    match /config/galleryExport {
+      allow read, write: if false;
+    }
+
     match /devices/{uid} {
       allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
       allow list: if isAdmin();
@@ -142,6 +149,12 @@ service cloud.firestore {
     }
 
     match /pinAttempts/{uid} {
+      allow read, write: if false;
+    }
+
+    // Per-uid rate limiting for exportGalleryZip. Function-managed; no client access
+    // (the trailing catch-all would deny it anyway — this is explicit for the reader).
+    match /galleryExportAttempts/{uid} {
       allow read, write: if false;
     }
 

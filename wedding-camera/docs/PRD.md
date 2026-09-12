@@ -91,6 +91,8 @@ after the event.
 - **GALLERY-002**: After release, correct PIN (4–6 digits) shows approved photos with attribution; PIN attempts rate-limited (5 per 15 min per identity).
 - **GALLERY-003**: Viewers can download individual photos at stored quality.
 - **GALLERY-004**: Gallery/admin pages send `noindex` and are excluded via robots.txt.
+- **GALLERY-005**: Viewers can download all visible photos as a single ZIP, prepared server-side and handed over as a link to tap.
+- **GALLERY-006**: Viewers can multi-select photos and download the selection — one photo saves directly, several are zipped in the browser (max 60).
 
 ### Privacy
 - **PRIVACY-001**: Consent line shown before the first photo can be taken.

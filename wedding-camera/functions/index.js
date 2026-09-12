@@ -554,6 +554,80 @@ async function exportUrl(bucket, file) {
   }
 }
 
+/** Filename stem for ZIP downloads: the couple's names, ASCII-safe, e.g. "Xin-Xin-and-Jia-Yi". */
+async function zipBaseName() {
+  const snap = await db.doc('config/event').get().catch(() => null);
+  const names = snap && snap.exists ? String(snap.data().coupleNames || '') : '';
+  const stem = names.replace(/&/g, ' and ').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return (stem || 'wedding').slice(0, 60);
+}
+
+/**
+ * Shared ZIP builder for both export callables. Streams every supplied `photos` doc's
+ * original object into `exports/{exportId}.zip` and resolves once the object is closed.
+ *
+ * @param {Array}  photoDocs  Firestore QueryDocumentSnapshots of `photos/{uuid}`.
+ * @param {string} exportId   uuid naming the output object.
+ * @returns {Promise<{zipFile: object, count: number, missing: string[]}>}
+ */
+async function buildZipFromPhotos(photoDocs, exportId, downloadName = 'photos.zip') {
+  const archiver = require('archiver');
+  const bucket = getStorage().bucket();
+  const zipFile = bucket.file(`exports/${exportId}.zip`);
+  // Content-Disposition rides along on the signed URL, so the browser saves a
+  // human-readable name instead of the random export id.
+  const zipStream = zipFile.createWriteStream({
+    contentType: 'application/zip',
+    metadata: { contentDisposition: `attachment; filename="${downloadName}"` },
+  });
+  const archive = archiver('zip', { zlib: { level: 0 } }); // JPEGs don't recompress
+  const done = new Promise((resolve, reject) => {
+    zipStream.on('finish', resolve);
+    zipStream.on('error', reject);
+    archive.on('error', reject);
+  });
+  // A single vanished object must not sink the whole export (ADMIN-006).
+  archive.on('warning', (err) => logger.warn('archive warning', { err: String(err) }));
+  archive.pipe(zipStream);
+
+  // Existence is probed in parallel batches first: a photos doc whose object has
+  // vanished would otherwise error the archive stream and sink the whole export.
+  const missing = [];
+  const entries = [];
+  const BATCH = 25;
+  for (let i = 0; i < photoDocs.length; i += BATCH) {
+    const slice = photoDocs.slice(i, i + BATCH);
+    const checked = await Promise.all(slice.map(async (doc) => {
+      const p = doc.data();
+      if (!p.storagePath || typeof p.storagePath !== 'string') return null;
+      const source = bucket.file(p.storagePath);
+      const [exists] = await source.exists().catch(() => [false]);
+      return exists ? { doc, p, source } : null;
+    }));
+    checked.forEach((e, idx) => (e ? entries.push(e) : missing.push(slice[idx].id)));
+  }
+
+  const seen = new Set();
+  let count = 0;
+  for (const { doc, p, source } of entries) {
+    const when = (p.capturedAt || p.receivedAt || Timestamp.now()).toDate();
+    const stamp = when.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    const nick = String(p.nickname || 'guest').replace(/[^\w\- ]/g, '').slice(0, 20).trim() || 'guest';
+    let name = `${stamp}_${nick}_${doc.id.slice(0, 8)}.jpg`;
+    for (let n = 2; seen.has(name); n += 1) {
+      name = `${stamp}_${nick}_${doc.id.slice(0, 8)}-${n}.jpg`;
+    }
+    seen.add(name);
+    archive.append(source.createReadStream(), { name });
+    count += 1;
+  }
+  await archive.finalize();
+  await done;
+
+  if (missing.length) logger.warn('export skipped photos with no object', { missing });
+  return { zipFile, count, missing };
+}
+
 exports.exportZip = onCall(
   { region: REGION, memory: '1GiB', timeoutSeconds: 540 },
   async (request) => {
@@ -561,7 +635,6 @@ exports.exportZip = onCall(
       throw new HttpsError('permission-denied', 'Admin only.');
     }
     const includeHidden = !!(request.data && request.data.includeHidden === true);
-    const archiver = require('archiver');
 
     // No orderBy: a status+orderBy query would need a composite index, and the ZIP
     // entry names already carry the timestamp (ADMIN-006).
@@ -571,53 +644,8 @@ exports.exportZip = onCall(
 
     const bucket = getStorage().bucket();
     const exportId = crypto.randomUUID();
-    const zipFile = bucket.file(`exports/${exportId}.zip`);
-    const zipStream = zipFile.createWriteStream({ contentType: 'application/zip' });
-    const archive = archiver('zip', { zlib: { level: 0 } }); // JPEGs don't recompress
-    const done = new Promise((resolve, reject) => {
-      zipStream.on('finish', resolve);
-      zipStream.on('error', reject);
-      archive.on('error', reject);
-    });
-    // A single vanished object must not sink the whole export (ADMIN-006).
-    archive.on('warning', (err) => logger.warn('archive warning', { err: String(err) }));
-    archive.pipe(zipStream);
-
-    // Existence is probed in parallel batches first: a photos doc whose object has
-    // vanished would otherwise error the archive stream and sink the whole export.
-    const missing = [];
-    const entries = [];
-    const BATCH = 25;
-    for (let i = 0; i < photos.docs.length; i += BATCH) {
-      const slice = photos.docs.slice(i, i + BATCH);
-      const checked = await Promise.all(slice.map(async (doc) => {
-        const p = doc.data();
-        if (!p.storagePath || typeof p.storagePath !== 'string') return null;
-        const source = bucket.file(p.storagePath);
-        const [exists] = await source.exists().catch(() => [false]);
-        return exists ? { doc, p, source } : null;
-      }));
-      checked.forEach((e, idx) => (e ? entries.push(e) : missing.push(slice[idx].id)));
-    }
-
-    const seen = new Set();
-    let count = 0;
-    for (const { doc, p, source } of entries) {
-      const when = (p.capturedAt || p.receivedAt || Timestamp.now()).toDate();
-      const stamp = when.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-      const nick = String(p.nickname || 'guest').replace(/[^\w\- ]/g, '').slice(0, 20).trim() || 'guest';
-      let name = `${stamp}_${nick}_${doc.id.slice(0, 8)}.jpg`;
-      for (let n = 2; seen.has(name); n += 1) {
-        name = `${stamp}_${nick}_${doc.id.slice(0, 8)}-${n}.jpg`;
-      }
-      seen.add(name);
-      archive.append(source.createReadStream(), { name });
-      count += 1;
-    }
-    await archive.finalize();
-    await done;
-
-    if (missing.length) logger.warn('export skipped photos with no object', { missing });
+    const { zipFile, count } = await buildZipFromPhotos(
+      photos.docs, exportId, `${await zipBaseName()}-${includeHidden ? 'all' : 'visible'}.zip`);
 
     const { url, signed } = await exportUrl(bucket, zipFile);
     await db.collection('audit').add({
@@ -628,5 +656,198 @@ exports.exportZip = onCall(
     });
     logger.info('export complete', { exportId, count, includeHidden, signed });
     return { url, count };
+  }
+);
+
+/**
+ * Gallery "Download all pictures" (CONTRACTS §5).
+ *
+ * Guests who unlocked the PIN get the SAME archive, not one build each: dozens of
+ * people tapping the button at once would otherwise re-stream the whole event's film
+ * dozens of times. `config/galleryExport` therefore caches one build server-side,
+ * keyed by a signature over the visible photo ids, and the signed URL is re-minted per
+ * caller (signing is cheap, so no URL is ever persisted). A per-uid hourly cap bounds
+ * what one caller can make us rebuild when the signature legitimately changes.
+ *
+ * Hidden photos are never included and there is no includeHidden switch — a gallery
+ * viewer must not be able to reach a photo the couple moderated away.
+ */
+const GALLERY_EXPORT_DOC = 'config/galleryExport';
+/** A cached archive is reused for this long; shorter than the 24h signed-URL life. */
+const GALLERY_EXPORT_TTL_MS = 20 * 60 * 60 * 1000;
+/** Fresh (non-cached) builds one uid may trigger per window. Cache hits are free. */
+const GALLERY_EXPORT_MAX_BUILDS = 3;
+const GALLERY_EXPORT_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * Build lock. Without it a cold cache is a thundering herd: the couple posts the link,
+ * fifty phones tap "Download all" inside a minute and every one of them re-streams the
+ * whole event. One caller claims the lock and builds; the rest poll and are handed the
+ * same archive. Long enough to cover a big event's build, short enough that a crashed
+ * builder does not wedge the button for the evening.
+ */
+const GALLERY_EXPORT_LOCK_MS = 8 * 60 * 1000;
+const GALLERY_EXPORT_POLL_MS = 3 * 1000;
+/**
+ * A superseded archive younger than this is left in the bucket: a guest may be halfway
+ * through downloading it on a URL that is still valid for hours. Stale objects are
+ * cheap and the shutdown checklist (README) wipes the bucket wholesale anyway.
+ */
+const GALLERY_EXPORT_KEEP_MS = 60 * 60 * 1000;
+
+/** sha256 over the sorted visible photo uuids — changes whenever the set changes. */
+function galleryExportSignature(photoDocs) {
+  const ids = photoDocs.map((d) => d.id).sort();
+  return crypto.createHash('sha256').update(ids.join(',')).digest('hex');
+}
+
+exports.exportGalleryZip = onCall(
+  { region: REGION, memory: '1GiB', timeoutSeconds: 540 },
+  async (request) => {
+    const token = (request.auth && request.auth.token) || {};
+    if (!request.auth || !(token.gallery === true || token.admin === true)) {
+      throw new HttpsError('permission-denied', 'Gallery access required.');
+    }
+    const uid = request.auth.uid;
+
+    // The claim alone is not enough: a viewer who unlocked before the couple re-locked
+    // the gallery must not keep a working download button.
+    const cfgSnap = await db.doc('config/event').get();
+    if (!cfgSnap.exists || cfgSnap.data().galleryReleased !== true) {
+      throw new HttpsError('failed-precondition', 'The gallery is not open yet.');
+    }
+
+    // Visible only — never hidden, and no caller-supplied switch that could change it.
+    const photos = await db.collection('photos').where('status', '==', 'visible').get();
+    const signature = galleryExportSignature(photos.docs);
+
+    const bucket = getStorage().bucket();
+    const cacheRef = db.doc(GALLERY_EXPORT_DOC);
+
+    /**
+     * Serve the cached archive iff it is finished, matches this signature, is young
+     * enough and its object is still there. Returns null when a build is needed.
+     */
+    async function serveCache(doc) {
+      if (!doc || doc.building === true) return null;
+      if (doc.signature !== signature || typeof doc.path !== 'string') return null;
+      if (!isTs(doc.createdAt) || Date.now() - doc.createdAt.toMillis() >= GALLERY_EXPORT_TTL_MS) return null;
+      const file = bucket.file(doc.path);
+      const [stillThere] = await file.exists().catch(() => [false]);
+      if (!stillThere) {
+        logger.warn('cached gallery export object vanished, rebuilding', { path: doc.path });
+        return null;
+      }
+      const { url, signed } = await exportUrl(bucket, file);
+      return { url, count: Number(doc.count) || 0, signed, path: doc.path };
+    }
+
+    const cached = await cacheRef.get().catch(() => null);
+    const cache = cached && cached.exists ? cached.data() : null;
+    const hit = await serveCache(cache);
+    if (hit) {
+      logger.info('gallery export served from cache', {
+        uid, path: hit.path, count: hit.count, signed: hit.signed,
+      });
+      return { url: hit.url, count: hit.count };
+    }
+
+    // Claim the build lock, or wait for whoever holds it. Waiting costs no rate-limit
+    // attempt: a guest who merely arrived second has not asked us to do any work.
+    const waitUntil = Date.now() + GALLERY_EXPORT_LOCK_MS;
+    for (;;) {
+      const claim = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(cacheRef);
+        const d = snap.exists ? snap.data() : {};
+        const since = isTs(d.buildingSince) ? d.buildingSince.toMillis() : 0;
+        const held = d.building === true
+          && d.buildingSignature === signature
+          && Date.now() - since < GALLERY_EXPORT_LOCK_MS;
+        if (held && Date.now() < waitUntil) return { wait: true };
+        // merge: the previous archive's path/count/createdAt stay readable, so anyone
+        // whose signature still matches it keeps getting a cache hit mid-rebuild.
+        tx.set(cacheRef, {
+          building: true,
+          buildingSince: Timestamp.now(),
+          buildingSignature: signature,
+        }, { merge: true });
+        return { wait: false };
+      });
+      if (!claim.wait) break;
+
+      await new Promise((r) => setTimeout(r, GALLERY_EXPORT_POLL_MS));
+      const snap = await cacheRef.get().catch(() => null);
+      const ready = await serveCache(snap && snap.exists ? snap.data() : null);
+      if (ready) {
+        logger.info('gallery export served from a concurrent build', {
+          uid, path: ready.path, count: ready.count, signed: ready.signed,
+        });
+        return { url: ready.url, count: ready.count };
+      }
+    }
+
+    let built = false;
+    try {
+      // Only a FRESH build costs an attempt — cache hits and waiters returned above.
+      const gate = await db.runTransaction(async (tx) => {
+        const ref = db.doc(`galleryExportAttempts/${uid}`);
+        const snap = await tx.get(ref);
+        const now = Date.now();
+        const data = snap.exists ? snap.data() : {};
+        const windowStart = isTs(data.windowStart) ? data.windowStart.toMillis() : 0;
+        const inWindow = now - windowStart < GALLERY_EXPORT_WINDOW_MS;
+        const count = inWindow ? Number(data.count) || 0 : 0;
+        if (inWindow && count >= GALLERY_EXPORT_MAX_BUILDS) return { blocked: true };
+        tx.set(ref, {
+          count: count + 1,
+          windowStart: Timestamp.fromMillis(inWindow ? windowStart : now),
+        });
+        return { blocked: false };
+      });
+      if (gate.blocked) {
+        logger.warn('gallery export rate limited', { uid });
+        throw new HttpsError('resource-exhausted', 'Please wait a little before downloading again.');
+      }
+
+      const exportId = crypto.randomUUID();
+      const { zipFile, count } = await buildZipFromPhotos(
+        photos.docs, exportId, `${await zipBaseName()}-album.zip`);
+      const { url, signed } = await exportUrl(bucket, zipFile);
+
+      // Full overwrite (no merge): this also clears the lock fields.
+      await cacheRef.set({
+        signature,
+        path: zipFile.name,
+        count,
+        createdAt: Timestamp.now(),
+        building: false,
+      });
+      built = true;
+
+      // Best effort, and never for a recent archive — someone may be mid-download on it.
+      const previousPath = cache && typeof cache.path === 'string' ? cache.path : null;
+      const previousAge = cache && isTs(cache.createdAt)
+        ? Date.now() - cache.createdAt.toMillis() : Infinity;
+      if (previousPath && previousPath !== zipFile.name && previousAge >= GALLERY_EXPORT_KEEP_MS) {
+        await bucket.file(previousPath).delete()
+          .catch((err) => logger.warn('could not delete superseded gallery export',
+            { path: previousPath, err: String(err) }));
+      }
+
+      await db.collection('audit').add({
+        action: 'gallery-export',
+        target: exportId,
+        actorUid: uid,
+        at: Timestamp.now(),
+      });
+      logger.info('gallery export complete', { exportId, count, uid, signed });
+      return { url, count };
+    } finally {
+      // A crash (or a rate-limit refusal after claiming) must not hold the lock for the
+      // full 8 minutes — the next caller should be free to try immediately.
+      if (!built) {
+        await cacheRef.set({ building: false }, { merge: true })
+          .catch((err) => logger.warn('could not release gallery export lock', { err: String(err) }));
+      }
+    }
   }
 );

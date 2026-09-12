@@ -1,6 +1,6 @@
 /**
  * Gallery app — workstream ④.
- * Implements PRD GALLERY-001..004 against docs/CONTRACTS.md §2, §4 (gallery claim), §5.
+ * Implements PRD GALLERY-001..006 against docs/CONTRACTS.md §2, §4 (gallery claim), §5.
  *
  * Hard rules honoured here:
  *  - all rendered text via textContent (never innerHTML) — XSS guard, CONTRACTS §9
@@ -15,6 +15,7 @@ import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { collection, doc, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
+import { zip } from 'fflate';
 import { applyTheme } from '../lib/theme.js';
 
 const app = document.getElementById('app');
@@ -201,6 +202,12 @@ let observer = null;
 let themeHeroDone = false;
 let wallHeroPath = null;
 
+/* GALLERY-006 — selection lives only for as long as the tab is open. */
+const selected = new Set();   // uuid
+let selecting = false;
+let selectionBusy = false;
+let packing = false;          // GALLERY-005 server-side ZIP in flight
+
 /* A screenful of tiles would otherwise fire ~20 signed reads at once. Cap the
  * in-flight lookups: the roll still fills top-down, and neither the phone nor
  * the rules layer gets a burst it has to queue anyway. */
@@ -325,9 +332,15 @@ function buildShot(uuid) {
   img.decoding = 'async';
   frame.appendChild(img);
 
+  // GALLERY-006: the badge ships with every tile but only paints in select mode.
+  frame.appendChild($('tpl-shot-check').content.firstElementChild.cloneNode(true));
+
   const meta = el('span', 'shot-meta');
   root.append(frame, meta);
-  root.addEventListener('click', () => openDetail(uuid));
+  root.addEventListener('click', () => {
+    if (selecting) toggleSelection(uuid);
+    else openDetail(uuid);
+  });
 
   const shot = { root, img, frame, meta, requested: false, fallback: null };
   shots.set(uuid, shot);
@@ -351,7 +364,7 @@ function renderWall() {
     const by = byLine(data);
     const when = fmtWhen(data.capturedAt || data.receivedAt);
     shot.meta.textContent = when ? `${by} · ${when}` : by;
-    shot.root.setAttribute('aria-label', `Photo ${by}. Opens full screen.`);
+    syncShotSemantics(shot, data);
     if (data.width > 0 && data.height > 0) {
       shot.root.style.setProperty('--ar', `${data.width} / ${data.height}`);
     }
@@ -362,6 +375,10 @@ function renderWall() {
   for (const [uuid, shot] of shots) {
     if (!seen.has(uuid)) { shot.root.remove(); shots.delete(uuid); }
   }
+  // A moderator hiding a frame mid-session must not leave it in the selection.
+  for (const uuid of selected) if (!seen.has(uuid)) selected.delete(uuid);
+  syncToolbarActions();
+  renderSelection();
 
   applyWallHero();
   if (!$('lightbox').hidden) syncDetail();
@@ -387,6 +404,8 @@ function startWall() {
 
 function stopWall() {
   if (wallUnsub) { wallUnsub(); wallUnsub = null; }
+  setSelectMode(false, false);
+  hideReady();
   photos = [];
   shots.clear();
   wallHeroPath = null;
@@ -412,7 +431,6 @@ try { setLayout(localStorage.getItem(LAYOUT_KEY) || 'grid', false); } catch { /*
 
 /* ── full-screen photo detail + download (GALLERY-003) ────────────── */
 let detailUuid = null;
-let objectUrl = null;
 let lastFocused = null;
 
 const lightbox = () => $('lightbox');
@@ -509,7 +527,6 @@ function closeDetail() {
   document.body.style.overflow = '';
   $('lightbox-img').removeAttribute('src');
   $('lightbox-img').classList.remove('is-loaded');
-  if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
   if (lastFocused && document.contains(lastFocused)) {
     lastFocused.focus({ preventScroll: true });
   }
@@ -560,20 +577,7 @@ $('lightbox-download').addEventListener('click', async () => {
   btn.disabled = true;
   label.textContent = 'Saving…';
   try {
-    const url = await photoUrl(data.storagePath);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`http ${res.status}`);
-    const blob = await res.blob();
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    objectUrl = URL.createObjectURL(blob);
-    const couple = safeName(config && config.coupleNames, 'wedding');
-    const nick = safeName(data.nickname, 'guest');
-    const link = el('a');
-    link.href = objectUrl;
-    link.download = `${couple}-${fileStamp(data.capturedAt || data.receivedAt)}-${nick}.jpg`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    await saveSinglePhoto(data); // GALLERY-003
   } catch (error) {
     console.error('download failed', error);
     $('lightbox-error').textContent = 'Download failed. Check your connection and try again.';
@@ -583,6 +587,341 @@ $('lightbox-download').addEventListener('click', async () => {
     label.textContent = 'Save';
   }
 });
+
+/* ── saving photos (GALLERY-003 / 005 / 006) ──────────────────────── */
+/* iOS puts a downloaded file in Files › Downloads rather than the camera roll,
+ * which surprises guests often enough to be worth one line of copy. */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function coupleSlug() {
+  return safeName(config && config.coupleNames, 'wedding');
+}
+
+/** The filename pattern the lightbox has always used: couple-stamp-nickname.jpg */
+function photoFileName(data) {
+  const nick = safeName(data.nickname, 'guest');
+  return `${coupleSlug()}-${fileStamp(data.capturedAt || data.receivedAt)}-${nick}.jpg`;
+}
+
+/* A stalled connection must not leave the guest staring at "Saving…" forever:
+ * every photo gets a ceiling, so the UI can surface the failure and recover. */
+const PHOTO_FETCH_MS = 60_000;
+
+function withDeadline(promise, ms, message) {
+  let timer = null;
+  const bell = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, bell]).finally(() => clearTimeout(timer));
+}
+
+/** The deadline covers the signed-URL lookup as well as the bytes: either half
+ *  can stall, and a guest stuck on "Saving…" has no way out. */
+async function fetchPhotoBlob(data, front = false) {
+  const abort = new AbortController();
+  const job = (async () => {
+    const url = await photoUrl(data.storagePath, front);
+    const res = await fetch(url, { signal: abort.signal });
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    return res.blob();
+  })();
+  job.catch(() => { /* the deadline may win the race; never leave this unhandled */ });
+  try {
+    return await withDeadline(job, PHOTO_FETCH_MS, 'photo fetch timed out');
+  } catch (error) {
+    abort.abort();
+    throw error;
+  }
+}
+
+/** Anchor click on a blob URL — same origin, so this works without a gesture. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = el('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000); // Safari reads it lazily
+}
+
+/** GALLERY-003: one frame at stored quality (lightbox Save, single selection). */
+async function saveSinglePhoto(data) {
+  const blob = await fetchPhotoBlob(data, true);
+  saveBlob(blob, photoFileName(data));
+}
+
+/* ── the ready banner (shared by GALLERY-005 and GALLERY-006) ─────── */
+/* A ZIP is never handed over by navigating after an await: mobile Safari and
+ * Chrome both drop such a navigation. The guest gets a link to tap instead. */
+let readyBlobUrl = null;
+
+function syncDock() {
+  const open = !$('ready-banner').hidden || !$('selbar').hidden;
+  app.classList.toggle('has-dock', open);
+}
+
+function hideReady() {
+  $('ready-banner').hidden = true;
+  $('ready-link').removeAttribute('href');
+  if (readyBlobUrl) { URL.revokeObjectURL(readyBlobUrl); readyBlobUrl = null; }
+  syncDock();
+}
+
+function showReady({ note, label, href, filename, hint = false, blobUrl = null }) {
+  if (readyBlobUrl && readyBlobUrl !== blobUrl) URL.revokeObjectURL(readyBlobUrl);
+  readyBlobUrl = blobUrl;
+  $('ready-note').textContent = note;
+  $('ready-label').textContent = label;
+  const link = $('ready-link');
+  link.href = href;
+  link.download = filename;
+  $('ready-hint').hidden = !hint;
+  $('ready-banner').hidden = false;
+  syncDock();
+  link.focus({ preventScroll: true });
+}
+
+$('ready-dismiss').addEventListener('click', () => {
+  hideReady();
+  const back = selecting ? $('sel-download') : $('download-all');
+  if (back && !back.disabled) back.focus({ preventScroll: true });
+});
+
+/* ── Download all (GALLERY-005) ───────────────────────────────────── */
+/* The whole album is zipped server-side by the `exportGalleryZip` callable —
+ * hundreds of originals are far too much for a phone to fetch and pack. */
+const EXPORT_TIMEOUT_MS = 540_000; // 9 minutes, matching the function's own ceiling
+
+const EXPORT_ERRORS = {
+  'permission-denied': 'The album locked itself again. Reload the page and enter the PIN.',
+  'failed-precondition': 'The album is not open yet.',
+  'resource-exhausted': 'Please wait a little before downloading again.',
+};
+
+function errorCode(error) {
+  return String((error && error.code) || '').replace(/^functions\//, '');
+}
+
+function setPacking(on, label) {
+  packing = on;
+  $('download-all-spinner').hidden = !on;
+  $('download-all-label').textContent = label || 'Download all';
+  syncToolbarActions();
+}
+
+async function downloadWholeAlbum() {
+  if (packing || photos.length === 0) return;
+  const count = photos.length;
+  hideReady();
+  setPacking(true, `Packing ${photoCountLabel(count)}…`);
+  try {
+    // Building the album ZIP server-side — or waiting on another guest's build —
+    // can run for minutes, so this call outlives the 70s callable default and the
+    // button simply stays in its packing state until the server answers.
+    const call = httpsCallable(functions, 'exportGalleryZip', { timeout: EXPORT_TIMEOUT_MS });
+    const res = await call({});
+    const data = (res && res.data) || {};
+    if (!data.url) throw new Error('export returned no url');
+    const total = Number(data.count) > 0 ? Number(data.count) : count;
+    showReady({
+      note: 'Your album is ready',
+      label: `Download ZIP (${photoCountLabel(total)})`,
+      href: data.url,
+      filename: `${coupleSlug()}-album.zip`,
+      hint: IS_IOS,
+    });
+  } catch (error) {
+    console.error('album export failed', error);
+    toast(EXPORT_ERRORS[errorCode(error)]
+      || 'Could not prepare the album. Try again in a moment.', 'bad');
+  } finally {
+    setPacking(false);
+  }
+}
+
+$('download-all').addEventListener('click', downloadWholeAlbum);
+
+/* ── select mode (GALLERY-006) ────────────────────────────────────── */
+/* Anything past this is a server job: packing it in the browser means holding
+ * every original in memory at once. */
+const MAX_SELECTION_ZIP = 60;
+const OVER_CAP_MSG = 'For more than 60 photos, use Download all';
+const ZIP_FETCH_CONCURRENCY = 4;
+
+function syncToolbarActions() {
+  $('download-all').disabled = packing || photos.length === 0;
+  $('select-toggle').disabled = packing || photos.length === 0;
+}
+
+/** In select mode a tile is a checkbox, not a link into the lightbox. */
+function syncShotSemantics(shot, data) {
+  const by = byLine(data);
+  if (selecting) {
+    shot.root.setAttribute('role', 'checkbox');
+    shot.root.setAttribute('aria-checked', String(selected.has(data.uuid)));
+    shot.root.setAttribute('aria-label', `Photo ${by}. Select this photo.`);
+  } else {
+    shot.root.removeAttribute('role');
+    shot.root.removeAttribute('aria-checked');
+    shot.root.setAttribute('aria-label', `Photo ${by}. Opens full screen.`);
+  }
+}
+
+function refreshShotSemantics() {
+  for (const data of photos) {
+    const shot = shots.get(data.uuid);
+    if (shot) syncShotSemantics(shot, data);
+  }
+}
+
+function setSelectionStatus(text) {
+  $('selbar-count').textContent = text;
+}
+
+function renderSelection() {
+  const n = selected.size;
+  const over = n > MAX_SELECTION_ZIP;
+  const all = photos.length > 0 && n >= photos.length;
+  if (!selectionBusy) setSelectionStatus(`${n} selected`);
+  $('sel-all').textContent = all ? 'Clear' : 'Select all';
+  $('sel-all').disabled = selectionBusy || photos.length === 0;
+  $('sel-cancel').disabled = selectionBusy;
+  $('sel-download').disabled = selectionBusy || n === 0 || over;
+}
+
+function setSelectMode(on, manageFocus = true) {
+  if (selecting === on) return;
+  selecting = on;
+  if (!on) selected.clear();
+  $('wall').dataset.selecting = on ? 'true' : 'false';
+  $('select-toggle').setAttribute('aria-pressed', String(on));
+  $('select-toggle-label').textContent = on ? 'Done' : 'Select';
+  $('selbar').hidden = !on;
+  $('wall-foot').textContent = on
+    ? 'Tap photos to pick them, then download the selection.'
+    : 'Tap any photo to see it full screen and save it.';
+  refreshShotSemantics();
+  renderSelection();
+  syncDock();
+  if (!manageFocus) return;
+  const target = on ? $('sel-all') : $('select-toggle');
+  if (target && !target.disabled) target.focus({ preventScroll: true });
+}
+
+function toggleSelection(uuid) {
+  if (selectionBusy) return;
+  if (selected.has(uuid)) selected.delete(uuid);
+  else selected.add(uuid);
+  const shot = shots.get(uuid);
+  const data = photos.find((p) => p.uuid === uuid);
+  if (shot && data) syncShotSemantics(shot, data);
+  if (selected.size === MAX_SELECTION_ZIP + 1) toast(OVER_CAP_MSG);
+  renderSelection();
+}
+
+$('select-toggle').addEventListener('click', () => setSelectMode(!selecting));
+$('sel-cancel').addEventListener('click', () => setSelectMode(false));
+
+$('sel-all').addEventListener('click', () => {
+  if (selectionBusy) return;
+  const all = photos.length > 0 && selected.size >= photos.length;
+  selected.clear();
+  if (!all) {
+    for (const data of photos) selected.add(data.uuid);
+    if (selected.size > MAX_SELECTION_ZIP) toast(OVER_CAP_MSG);
+  }
+  refreshShotSemantics();
+  renderSelection();
+});
+
+/* Escape leaves select mode; the lightbox keeps its own Escape. */
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !selecting) return;
+  if (!lightbox().hidden) return;
+  setSelectMode(false);
+});
+
+/** Four at a time: enough to saturate a phone's link, few enough to stay polite. */
+async function fetchSelectionBlobs(picks) {
+  const blobs = new Array(picks.length);
+  let started = 0;
+  let done = 0;
+  setSelectionStatus(`Fetching 0 / ${picks.length}…`);
+  const worker = async () => {
+    for (;;) {
+      const index = started;
+      started += 1;
+      if (index >= picks.length) return;
+      blobs[index] = await fetchPhotoBlob(picks[index]);
+      done += 1;
+      setSelectionStatus(`Fetching ${done} / ${picks.length}…`);
+    }
+  };
+  const lanes = Math.min(ZIP_FETCH_CONCURRENCY, picks.length);
+  await Promise.all(Array.from({ length: lanes }, worker));
+  return blobs;
+}
+
+async function buildZipEntries(picks, blobs) {
+  const entries = {};
+  for (let i = 0; i < picks.length; i += 1) {
+    let name = photoFileName(picks[i]);
+    if (entries[name]) { // same guest, same minute — keep both frames
+      const dot = name.lastIndexOf('.');
+      name = `${name.slice(0, dot)}-${i + 1}${name.slice(dot)}`;
+    }
+    entries[name] = new Uint8Array(await blobs[i].arrayBuffer());
+  }
+  return entries;
+}
+
+/** Level 0: JPEGs do not recompress, so deflating only burns phone battery. */
+function zipEntries(entries) {
+  return new Promise((resolve, reject) => {
+    zip(entries, { level: 0 }, (error, data) => (error ? reject(error) : resolve(data)));
+  });
+}
+
+async function downloadSelection() {
+  const picks = photos.filter((data) => selected.has(data.uuid));
+  if (!picks.length || picks.length > MAX_SELECTION_ZIP || selectionBusy) return;
+  selectionBusy = true;
+  hideReady();
+  renderSelection();
+  try {
+    if (picks.length === 1) {
+      setSelectionStatus('Saving…');
+      await saveSinglePhoto(picks[0]);
+      selectionBusy = false;
+      setSelectMode(false);
+      return;
+    }
+    const blobs = await fetchSelectionBlobs(picks);
+    setSelectionStatus('Packing ZIP…');
+    const entries = await buildZipEntries(picks, blobs);
+    const bytes = await zipEntries(entries);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+    showReady({
+      note: `${photoCountLabel(picks.length)} ready`,
+      label: 'Save ZIP',
+      href: url,
+      filename: `${coupleSlug()}-selected-${picks.length}-photos.zip`,
+      hint: IS_IOS,
+      blobUrl: url,
+    });
+  } catch (error) {
+    console.error('selection download failed', error);
+    toast('Could not save those photos. Check your connection and try again.', 'bad');
+  } finally {
+    selectionBusy = false;
+    renderSelection();
+  }
+}
+
+$('sel-download').addEventListener('click', downloadSelection);
 
 /* ── PIN entry (GALLERY-002) ──────────────────────────────────────── */
 const pinCells = [...$('pin-cells').children];
