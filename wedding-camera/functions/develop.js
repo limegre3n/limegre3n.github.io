@@ -142,27 +142,136 @@ function applyTone(pipe, recipe) {
 /* -------------------------------------------------------------------- overlays --- */
 
 /**
- * Monochrome film grain as an `overlay`-blended layer: mid-grey is a no-op, so only the
- * noise deviations reach the picture. The sigma is pre-multiplied because greyscaling
- * three independent gaussian channels averages ~2/3 of the noise away.
+ * Grain geometry. One noise sample is one grain "cell", and there are always
+ * GRAIN_CELLS_LONG_EDGE of them across the longer edge — so a cell is ~1 px on a
+ * 1400 px photo and ~1.8 px on a 2560 px one. That is what makes the grain look the
+ * same size at a given DISPLAY size instead of getting finer as uploads get bigger,
+ * and it is why the layer is drawn small and scaled up rather than drawn per pixel.
+ */
+const GRAIN_CELLS_LONG_EDGE = 1400;
+/** Soft-edge blur on the upscaled layer, in full-resolution pixels. */
+const GRAIN_BLUR_SIGMA = 0.4;
+/** libvips drops a blur kernel this shallow by default; ask for the real one. */
+const GRAIN_BLUR_MIN_AMPLITUDE = 0.02;
+/** Fraction of a white-noise RMS a bicubic enlargement keeps (measured, v8.15). */
+const GRAIN_RESAMPLE_RETENTION = 0.817;
+/** Autocorrelation width of one enlarged cell, in cells (fitted to the same runs). */
+const GRAIN_CELL_SPREAD = 1.35;
+/** How much grain survives in crushed blacks and blown highlights; 1 = no masking. */
+const GRAIN_SHADOW_FLOOR = 0.45;
+
+/**
+ * Mid-tone weighting, `luma → 0..1`. Film grain is a mid-tone phenomenon: the emulsion
+ * has nothing left to develop where it is clear or fully exposed. A parabola through
+ * mid-grey, lifted off zero so the extremes thin out rather than go glassy.
+ */
+const MIDTONE_WEIGHT = new Float32Array(256);
+for (let v = 0; v < 256; v += 1) {
+  const t = v / 255;
+  MIDTONE_WEIGHT[v] = GRAIN_SHADOW_FLOOR + (1 - GRAIN_SHADOW_FLOOR) * 4 * t * (1 - t);
+}
+
+/**
+ * A luma thumbnail of the base, one sample per grain cell, used to modulate the grain.
+ * Measured on the pre-tone image: the recipe shifts tones a little, but not enough to
+ * move a pixel between "mid-tone" and "extreme", and this way it costs one reduction.
  *
- * @param {number} width
- * @param {number} height
+ * @param {Buffer} base
+ * @param {{ width: number, height: number, channels: number }} raw
+ * @param {number} cellsW
+ * @param {number} cellsH
+ * @returns {Promise<Buffer>} cellsW * cellsH single-band luma
+ */
+function midtoneMask(base, raw, cellsW, cellsH) {
+  // Green stands in for luma: it is ~59 % of it, it needs no full-resolution pass to
+  // extract, and the mask only has to know shadow from mid-tone from highlight.
+  return sharp(base, { raw })
+    .extractChannel(1)
+    .resize(cellsW, cellsH, { kernel: 'cubic' })
+    .raw().toBuffer();
+}
+
+/**
+ * One gaussian sample per grain cell, centred on mid-grey and scaled by the mid-tone
+ * mask underneath it. Marsaglia polar, which yields two samples per pair of randoms.
+ *
+ * @param {number} count  cells to fill
+ * @param {number} sigma  per-cell standard deviation, in 0..255 units
+ * @param {Buffer} mask   `count` luma samples
+ * @returns {Buffer} `count` single-band pixels
+ */
+function grainSamples(count, sigma, mask) {
+  const out = Buffer.allocUnsafe(count);
+  let i = 0;
+  while (i < count) {
+    let u = 0;
+    let v = 0;
+    let s = 0;
+    do {
+      u = Math.random() * 2 - 1;
+      v = Math.random() * 2 - 1;
+      s = u * u + v * v;
+    } while (s === 0 || s >= 1);
+    const m = Math.sqrt((-2 * Math.log(s)) / s) * sigma;
+    out[i] = clamp(Math.round(128 + u * m * MIDTONE_WEIGHT[mask[i]]), 0, 255);
+    i += 1;
+    if (i < count) {
+      out[i] = clamp(Math.round(128 + v * m * MIDTONE_WEIGHT[mask[i]]), 0, 255);
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Monochrome film grain as an `overlay`-blended layer: mid-grey is a no-op, so only the
+ * noise deviations reach the picture, and the blend's own response (strongest at
+ * mid-grey, tapering to nothing at both ends) already behaves like an emulsion.
+ *
+ * The layer is drawn at one sample per grain cell, enlarged bicubically and softened,
+ * which turns per-pixel hash into clumps with soft edges — the difference between
+ * "film" and "a noisy sensor". Both steps eat amplitude (an enlargement averages
+ * neighbouring cells, the blur averages neighbouring pixels), so the per-cell sigma is
+ * divided back out by how much of it survives; the recipe's `grain` therefore stays the
+ * standard deviation the picture actually receives, at any capture size.
+ *
+ * @param {Buffer} base   raw sRGB pixels the grain will sit on, for the mid-tone mask
+ * @param {{ width: number, height: number, channels: number }} raw  shape of `base`
  * @param {number} sigma  recipe grain, 0..30
  * @returns {Promise<object>} a sharp composite entry
  */
-async function grainLayer(width, height, sigma) {
-  const input = await sharp({
-    create: {
-      width,
-      height,
-      channels: 3,
-      background: '#808080',
-      noise: { type: 'gaussian', mean: 128, sigma: clamp(sigma, 0, 30) * 1.6 },
-    },
-  }).greyscale().toColourspace('srgb').png({ compressionLevel: 1 }).toBuffer();
-  return { input, blend: 'overlay' };
+async function grainLayer(base, raw, sigma) {
+  const { width, height } = raw;
+  const k = Math.max(1, Math.max(width, height) / GRAIN_CELLS_LONG_EDGE);
+  const cellsW = Math.max(1, Math.round(width / k));
+  const cellsH = Math.max(1, Math.round(height / k));
+  // Below one cell per pixel there is nothing to enlarge, and nothing to compensate for.
+  const enlarged = cellsW !== width || cellsH !== height;
+
+  const spread = GRAIN_CELL_SPREAD * (enlarged ? k : 1);
+  // Variance a gaussian blur leaves on a gaussian-correlated field of width `spread`.
+  const blurKept = (spread * spread) / (spread * spread + 2 * GRAIN_BLUR_SIGMA ** 2);
+  const kept = (enlarged ? GRAIN_RESAMPLE_RETENTION : 1) * blurKept;
+
+  const mask = await midtoneMask(base, raw, cellsW, cellsH);
+  const cells = grainSamples(cellsW * cellsH, clamp(sigma, 0, 30) / kept, mask);
+
+  let layer = sharp(cells, { raw: { width: cellsW, height: cellsH, channels: 1 } });
+  if (enlarged) layer = layer.resize(width, height, { kernel: 'cubic' });
+  // Three bands, because libvips will not band-expand a b-w layer over an sRGB base.
+  const input = await layer
+    .blur({ sigma: GRAIN_BLUR_SIGMA, minAmplitude: GRAIN_BLUR_MIN_AMPLITUDE })
+    .toColourspace('srgb')
+    .raw().toBuffer();
+  return { input, raw: { width, height, channels: 3 }, blend: 'overlay' };
 }
+
+/**
+ * How much smaller than the picture the vignette gradient is rasterised. Rasterising an
+ * SVG gradient at 2560 px costs ~200 ms and nothing in it is higher-frequency than a
+ * few hundred pixels, so it is drawn small and scaled back up.
+ */
+const VIGNETTE_RASTER_DIVISOR = 4;
 
 /**
  * Soft elliptical vignette as a `multiply`-blended radial gradient: white in the middle
@@ -171,19 +280,27 @@ async function grainLayer(width, height, sigma) {
  * @param {number} width
  * @param {number} height
  * @param {number} strength  recipe vignette, 0..1
- * @returns {object} a sharp composite entry
+ * @returns {Promise<object>} a sharp composite entry
  */
-function vignetteLayer(width, height, strength) {
+async function vignetteLayer(width, height, strength) {
   const edge = Math.round(255 * (1 - clamp(strength, 0, 1)));
   const hex = edge.toString(16).padStart(2, '0').repeat(3);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" `
+  const rasterW = Math.max(2, Math.round(width / VIGNETTE_RASTER_DIVISOR));
+  const rasterH = Math.max(2, Math.round(height / VIGNETTE_RASTER_DIVISOR));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${rasterW}" height="${rasterH}" `
     + `viewBox="0 0 ${width} ${height}">`
     + '<defs><radialGradient id="v" cx="50%" cy="50%" r="72%">'
     + '<stop offset="42%" stop-color="#ffffff"/>'
     + `<stop offset="100%" stop-color="#${hex}"/>`
     + '</radialGradient></defs>'
     + `<rect width="${width}" height="${height}" fill="url(#v)"/></svg>`;
-  return { input: Buffer.from(svg), blend: 'multiply' };
+  const input = await sharp(Buffer.from(svg))
+    .removeAlpha()
+    .toColourspace('b-w')
+    .resize(width, height, { kernel: 'cubic' })
+    .toColourspace('srgb')
+    .raw().toBuffer();
+  return { input, raw: { width, height, channels: 3 }, blend: 'multiply' };
 }
 
 /* ------------------------------------------------------------------ date stamp --- */
@@ -369,10 +486,10 @@ async function developBuffer(buffer, { recipe = null, stampText = null } = {}) {
 
   const layers = [];
   if (recipe && num(recipe.grain, 0) > 0) {
-    layers.push(await grainLayer(width, height, num(recipe.grain, 0)));
+    layers.push(await grainLayer(data, { width, height, channels }, num(recipe.grain, 0)));
   }
   if (recipe && num(recipe.vignette, 0) > 0) {
-    layers.push(vignetteLayer(width, height, num(recipe.vignette, 0)));
+    layers.push(await vignetteLayer(width, height, num(recipe.vignette, 0)));
   }
   if (stampText) {
     const longEdge = Math.max(width, height);

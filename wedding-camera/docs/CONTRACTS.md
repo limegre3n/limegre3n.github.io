@@ -309,7 +309,7 @@ Grant = `snapsRemaining += N`, `snapsGranted += N` — allowed for admin via rul
 
 ## 6. Client upload protocol (workstream ②)
 
-1. Capture → canvas re-encode (JPEG, 2048px longest edge, q≈0.8; canvas strips EXIF/GPS)
+1. Capture → canvas re-encode (JPEG, 2560px longest edge, q 0.86 stepping to ≥0.72 for a ≤2.5 MB target; canvas strips EXIF/GPS. Where the browser offers ImageCapture.takePhoto the still is used instead of a preview frame (CAMERA-013))
    → record in IndexedDB (db `wedding-camera`, store `queue`, key `uuid`):
    `{ uuid, blob, capturedAt, attemptCount, state }`, `uuid = crypto.randomUUID()`.
 2. State machine per item: `queued → uploading → awaitingResult → confirmed | rejected`.
@@ -345,7 +345,7 @@ Cap-reached renders as `ended` (guests never see the cap).
 
 ## 8. Camera capability contract (workstream ①)
 
-- Acquire: `getUserMedia({ video: { facingMode, width: {ideal: 2048} }, audio: false })`.
+- Acquire: `getUserMedia({ video: { facingMode, width: {ideal: 1920} }, audio: false })`.
 - Flip: stop tracks, re-acquire with toggled `facingMode` (`user`/`environment`).
 - Torch: show button iff `track.getCapabilities().torch === true`
   (Android Chrome yes / iOS Safari no); apply via
@@ -354,7 +354,7 @@ Cap-reached renders as `ended` (guests never see the cap).
 - Zoom: if `capabilities.zoom` exists → `applyConstraints({ advanced: [{ zoom }] })`;
   else digital: CSS scale on `<video>` + matching centered crop at capture (≤2×).
 - Capture: draw current frame to canvas at native resolution (respect digital crop),
-  `canvas.toBlob('image/jpeg', 0.8)` after downscale to 2048px longest edge.
+  `canvas.toBlob('image/jpeg', 0.86)` (stepping down to 0.72 if over 2.5 MB) after downscale to 2560px longest edge.
 - Re-acquire stream on `visibilitychange → visible` if track ended (iOS backgrounding).
 - Any acquisition failure → `permissionDenied`/`cameraUnavailable` states with native
   `<input type="file" accept="image/*" capture="environment">` fallback into the same queue.
@@ -404,7 +404,7 @@ served from Firestore and never changes at runtime):
       linear: [a, b] | null,    // extra affine pass
       contrast: number,         // 1 = none; applied about mid-grey
       lift: 0..40,              // adds to the blacks
-      grain: 0..30,             // gaussian noise sigma
+      grain: 0..30,             // gaussian grain sigma, resolution-independent
       vignette: 0..1 } } ] }
 ```
 
@@ -416,8 +416,23 @@ viewfinder so the shot looks roughly like the developed result. It is an approxi
 never the authority — the server recipe is. The two halves are deliberately separate so
 the look can be re-graded later (`redevelopAll`) without re-shooting anything.
 
+### Grain
+
+`recipe.grain` is the standard deviation the developed picture actually receives, not a
+per-pixel noise amplitude. The server draws one gaussian sample per **grain cell**, with
+1400 cells across the longer edge whatever the capture size, then enlarges that layer
+bicubically to full resolution and softens it by ~0.4 px — so a clump is ~1 px on a
+1400 px capture and ~1.8 px on a 2560 px one, and the grain looks the same at a given
+display size instead of getting finer as uploads get bigger. The sigma is divided back
+out by how much of it the enlargement and the blur average away, so the recipe number
+holds at any size. The layer is `overlay`-blended (mid-grey is a no-op) and additionally
+weighted towards the mid-tones, so crushed blacks and blown highlights stay clean, the
+way they do on film. Nothing in the develop assumes a capture size.
+
 `scripts/develop-samples.js` renders one sample per stock offline (no emulator) so a
-recipe change can be eyeballed before it ships.
+recipe change can be eyeballed before it ships — over a clean synthetic scene and over
+the same scene carrying sensor noise, which is the test that matters: film grain has to
+stay distinguishable from the noise a phone already put in the frame.
 
 ### Upload custom metadata (set by the guest app)
 

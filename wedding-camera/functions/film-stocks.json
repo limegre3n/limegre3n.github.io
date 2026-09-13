@@ -12,7 +12,7 @@
       "name": "Golden Hour",
       "css": {
         "filter": "sepia(.24) saturate(1.3) contrast(1.05) brightness(1.05) hue-rotate(-5deg)",
-        "grain": 0.1,
+        "grain": 0.05,
         "vignette": 0.16
       },
       "recipe": {
@@ -23,7 +23,7 @@
         "linear": null,
         "contrast": 1.06,
         "lift": 9,
-        "grain": 7,
+        "grain": 3.5,
         "vignette": 0.16
       }
     },
@@ -32,7 +32,7 @@
       "name": "Seaside",
       "css": {
         "filter": "saturate(1.02) contrast(1.06) brightness(1.04) hue-rotate(10deg)",
-        "grain": 0.08,
+        "grain": 0.04,
         "vignette": 0.1
       },
       "recipe": {
@@ -43,7 +43,7 @@
         "linear": null,
         "contrast": 1.06,
         "lift": 14,
-        "grain": 6,
+        "grain": 3,
         "vignette": 0.1
       }
     },
@@ -52,7 +52,7 @@
       "name": "Portrait Soft",
       "css": {
         "filter": "sepia(.1) saturate(1.04) contrast(.9) brightness(1.06)",
-        "grain": 0.05,
+        "grain": 0.025,
         "vignette": 0.18
       },
       "recipe": {
@@ -63,7 +63,7 @@
         "linear": null,
         "contrast": 0.9,
         "lift": 12,
-        "grain": 4,
+        "grain": 2,
         "vignette": 0.18
       }
     },
@@ -72,7 +72,7 @@
       "name": "Silver",
       "css": {
         "filter": "grayscale(1) contrast(1.08) brightness(1.04)",
-        "grain": 0.22,
+        "grain": 0.11,
         "vignette": 0.22
       },
       "recipe": {
@@ -83,7 +83,7 @@
         "linear": null,
         "contrast": 1.08,
         "lift": 16,
-        "grain": 13,
+        "grain": 6.5,
         "vignette": 0.22
       }
     },
@@ -92,7 +92,7 @@
       "name": "Faded",
       "css": {
         "filter": "sepia(.22) saturate(.76) contrast(.86) brightness(1.09) hue-rotate(-8deg)",
-        "grain": 0.14,
+        "grain": 0.07,
         "vignette": 0.28
       },
       "recipe": {
@@ -103,7 +103,7 @@
         "linear": null,
         "contrast": 0.86,
         "lift": 26,
-        "grain": 10,
+        "grain": 5,
         "vignette": 0.28
       }
     }

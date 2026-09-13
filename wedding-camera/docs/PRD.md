@@ -61,7 +61,7 @@ after the event.
 - **CAMERA-004**: No captured photo is ever displayed to the guest.
 - **CAMERA-005**: Torch toggle appears only when the active track reports torch capability; front camera uses full-brightness white "screen flash".
 - **CAMERA-006**: Zoom is a **step-less** control (slider + pinch), not fixed steps. It uses the native `zoom` constraint where supported, switches between separate back cameras where that is the only lens control available, and falls back to center-crop digital zoom up to 2× otherwise. Displayed magnification is always a **true** magnification (see CAMERA-010), and the capture is cropped by exactly the digital factor in play.
-- **CAMERA-007**: Photos re-encoded on device to JPEG, longest edge 2048px, target ≤1MB.
+- **CAMERA-007**: Photos re-encoded on device to JPEG, longest edge 2560px, target ≤2.5MB, quality ≥0.72 (a soft target: grain is worse than bytes, and the 8MB upload cap is never approached).
 - **CAMERA-008**: Re-encode strips ALL source metadata (EXIF/GPS); only nickname, device uid, capture timestamp attach server-side.
 - **CAMERA-009**: If getUserMedia is unavailable or denied, offer native-camera fallback (`<input type="file" accept="image/*" capture="environment">`) through the same compress/queue/upload pipeline and quota.
 - **CAMERA-010**: **1× means the phone's main wide lens, on every handset.** The app builds a *lens ladder* from `enumerateDevices()` labels plus the active track's `getCapabilities()`, and shows the guest a magnification, never a raw constraint value:
@@ -73,6 +73,7 @@ after the event.
   - `?diag=1` shows a dismissible, copyable text sheet with the UA, every device + capability range, the resolved ladder and the live mapping — for tuning the heuristics against real handsets.
 - **CAMERA-011**: The guest picks a **film stock** on a dial under the viewfinder — a snap-scrolling strip of swatches (`clean`, `golden`, `seaside`, `portrait`, `silver`, `faded`), the centred one being the loaded film. Tap, swipe or arrow keys move it, it is a `radiogroup`, it vibrates lightly on change and the pick is remembered on the phone (`wc.filter`, default `clean`). The live viewfinder previews that stock (CSS filter + grain + vignette), but the **upload is always the clean re-encoded original**: only the stock id and the phone's UTC offset ride along as metadata, and the server develops the look into a second copy (CONTRACTS §11). The dial stays usable in the landscape grip layout and never covers the frame centre or the shutter.
 - **CAMERA-012**: When the event has the date stamp switched on (`config/event.dateStamp`, ADMIN-011), the viewfinder shows a **90s quartz date-back preview** in the bottom-right corner — orange seven-segment-style `'YY M D` from the phone's own clock. It is a preview only: the capture draws the video, never the DOM, so nothing is burned into the JPEG on the phone.
+- **CAMERA-013**: Where the browser offers a still-photo capture API (`ImageCapture.takePhoto()`), shots use it — the full-sensor, noise-reduced still rather than a frame off the video preview — and fall back to a viewfinder frame grab whenever it is missing, refuses or is slow. Framing always matches the preview: the still is centre-cropped to the viewfinder's aspect before the digital-zoom crop, and goes through the same canvas re-encode (so CAMERA-008 still holds).
 
 ### Upload
 - **UPLOAD-001**: Every capture is written to IndexedDB before any upload attempt.
@@ -155,7 +156,7 @@ real backstops = event cap, per-device upload spacing, window, pause, size/type 
 - First load ≤3s on 4G; initial payload ≤500KB.
 - QR-scan → camera-ready ≤30s first time, ≤10s returning.
 - ≥99.5% of captured photos stored server-side by event end +12h.
-- Stored JPEG ≤1MB typical, 8MB hard cap, 2048px longest edge.
+- Stored JPEG ≤2.5MB typical, 8MB hard cap, 2560px longest edge (CAMERA-007).
 - Shutter ≥64px touch target; WCAG AA contrast; dark-venue friendly; one-handed use.
 - Capture+queue keep working during a total backend outage.
 - 100 concurrent guests; burst ~50 uploads/min.

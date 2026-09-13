@@ -1,12 +1,15 @@
 /**
  * Camera capture pipeline (workstream ① — contract: docs/CONTRACTS.md §8).
  * getUserMedia acquisition, flip, torch detection, lens-aware step-less zoom
- * (CAMERA-006 / CAMERA-010), canvas re-encode to ≤2048px JPEG (strips all
- * EXIF/GPS — CAMERA-007/008).
+ * (CAMERA-006 / CAMERA-010), still-photo capture with a viewfinder fallback
+ * (CAMERA-013), canvas re-encode to ≤2560px JPEG (strips all EXIF/GPS —
+ * CAMERA-007/008).
  *
  * Public API (frozen): class Camera { start, stop, flip, setTorch, applyZoom,
  * setMagnification, capture, supportsTorch, supportsNativeZoom, facingMode }
- * and reencodeFile(file). `dispose()` stops the stream AND detaches the
+ * and reencodeFile(file). `capture()` still resolves to a single JPEG Blob;
+ * `lastCaptureSource` ('still' | 'frame') and `lastEncode` report how the most
+ * recent shot was produced. `dispose()` stops the stream AND detaches the
  * lifecycle listeners so repeated mounts of the viewfinder cannot leak handlers.
  *
  * Camera is an EventTarget: 'ladderchange' fires once the lens ladder is known
@@ -15,11 +18,29 @@
  */
 import { buildLadder, resolve, describeLadder, describeMapping } from './lens.js';
 
-const MAX_EDGE = 2048;
-const JPEG_QUALITY = 0.8;
+const MAX_EDGE = 2560;
+const JPEG_QUALITY = 0.86;
 /** CAMERA-007 target size; we step quality down a little rather than resize. */
-const TARGET_BYTES = 1_000_000;
-const MIN_QUALITY = 0.55;
+const TARGET_BYTES = 2_500_000;
+const MIN_QUALITY = 0.72;
+const QUALITY_STEP = 0.06;
+/**
+ * Belt and braces for the 8MB cap in storage.rules / functions finalize: a frame
+ * that is still enormous at MIN_QUALITY gets resized instead of rejected.
+ */
+const SAFETY_BYTES = 6_000_000;
+const SAFETY_SCALE = 0.85;
+const MIN_SAFETY_EDGE = 640;
+
+/** CAMERA-013: how long a still is allowed to take before we grab a frame. */
+const STILL_TIMEOUT_MS = 2500;
+/**
+ * Preview resolution is a SEPARATE knob from MAX_EDGE: stills come from
+ * ImageCapture now, so there is nothing to gain from asking phones for a 1440p
+ * viewfinder (battery, heat, dropped frames) — 1080p-class is what they served
+ * before and what the frame-grab fallback still works from.
+ */
+const PREVIEW_IDEAL_WIDTH = 1920;
 
 /** Coalesce a drag into one applyConstraints per frame-ish (CAMERA-010). */
 const ZOOM_DEBOUNCE_MS = 50;
@@ -37,6 +58,11 @@ export class Camera extends EventTarget {
     this.digitalZoom = 1;
     this.torchOn = false;
     this.cropAtCapture = false;
+
+    /** CAMERA-013: how the last shot was produced — 'still' | 'frame' | null. */
+    this.lastCaptureSource = null;
+    /** CAMERA-007: { width, height, quality, bytes, steps } of the last encode. */
+    this.lastEncode = null;
 
     /** Displayed magnification — ALWAYS starts at 1×, the main wide lens. */
     this.magnification = 1;
@@ -102,8 +128,8 @@ export class Camera extends EventTarget {
       throw err;
     }
     const video = deviceId
-      ? { deviceId: { exact: deviceId }, width: { ideal: MAX_EDGE } }
-      : { facingMode: this.facingMode, width: { ideal: MAX_EDGE } };
+      ? { deviceId: { exact: deviceId }, width: { ideal: PREVIEW_IDEAL_WIDTH } }
+      : { facingMode: this.facingMode, width: { ideal: PREVIEW_IDEAL_WIDTH } };
     return navigator.mediaDevices.getUserMedia({ video, audio: false });
   }
 
@@ -391,6 +417,9 @@ export class Camera extends EventTarget {
       `active device: ${String(this.settings.deviceId || 'unknown').slice(0, 6)}`,
       `video: ${this.video?.videoWidth || 0}×${this.video?.videoHeight || 0}`,
       `torch capable: ${this.supportsTorch}`,
+      // CAMERA-013: which path the last shot actually used, and what it encoded to.
+      `still API: ${!!globalThis.ImageCapture}   last capture: ${this.lastCaptureSource || 'none yet'}`,
+      `last encode: ${describeEncode(this.lastEncode)}`,
       '',
       `devices (${this.devices.length}):`,
     ];
@@ -409,8 +438,17 @@ export class Camera extends EventTarget {
   /* -------------------------------------------------------------- capture */
 
   /**
-   * Capture the current frame → JPEG Blob ≤2048px longest edge.
-   * Canvas re-encode discards every byte of source metadata (EXIF/GPS).
+   * Take a photo → JPEG Blob, longest edge ≤MAX_EDGE (CAMERA-007).
+   *
+   * Two sources, in order of quality (CAMERA-013):
+   *   1. `ImageCapture.takePhoto()` — the full-sensor, noise-reduced still the
+   *      platform camera app would take. The viewfinder stream is video-quality
+   *      (~1080p, heavy temporal denoise, grainy in dim venues); a still is not.
+   *   2. A frame grab off the live <video>, exactly as before, whenever the
+   *      still API is missing, refuses, or takes too long.
+   * Either way the pixels go through the SAME canvas draw, so framing, digital
+   * zoom and the front-camera mirror are identical, and the canvas re-encode
+   * discards every byte of source metadata — EXIF/GPS included (CAMERA-008).
    * The frame is never shown to the guest (CAMERA-004).
    */
   async capture() {
@@ -418,31 +456,183 @@ export class Camera extends EventTarget {
     const vh = this.video.videoHeight;
     if (!vw || !vh) throw new Error('camera-not-ready');
 
+    // Torch and native zoom are track constraints that are already applied; on
+    // Android they carry into the still as-is, so there is nothing to set here
+    // (deliberately no fillLightMode: it would fire the LED a second time).
+    const still = await this._takeStill();
+    if (still) {
+      this.lastCaptureSource = 'still';
+      try {
+        return await this._encode(this._drawStill(still, vw / vh));
+      } finally {
+        still.close?.();
+      }
+    }
+    this.lastCaptureSource = 'frame';
+    return this._encode(this._drawFrame(vw, vh));
+  }
+
+  /**
+   * CAMERA-013: a decoded still, or null to fall back. Never throws — every
+   * failure mode (no API, dead track, rejection, timeout) means "grab a frame".
+   */
+  async _takeStill() {
+    const track = this.track;
+    if (!globalThis.ImageCapture || !track || track.readyState !== 'live') return null;
+    try {
+      const blob = await withTimeout(takePhoto(track), STILL_TIMEOUT_MS, 'still-timeout');
+      if (!blob || !blob.size) throw new Error('still-empty');
+      return await decodeStill(blob);
+    } catch (err) {
+      noteStillFallback(err);
+      return null;
+    }
+  }
+
+  /** The pre-CAMERA-013 path: the live preview frame, cropped by digital zoom. */
+  _drawFrame(vw, vh) {
     // Digital zoom: centered crop of 1/factor of the frame, for any factor ≥ 1
     // (CAMERA-010 — between-lens and beyond-the-top-lens ranges both land here).
-    const crop = this.cropAtCapture ? this.digitalZoom : 1;
-    const sw = Math.round(vw / crop);
-    const sh = Math.round(vh / crop);
-    const sx = Math.round((vw - sw) / 2);
-    const sy = Math.round((vh - sh) / 2);
-
-    const scale = Math.min(1, MAX_EDGE / Math.max(sw, sh));
-    const dw = Math.max(1, Math.round(sw * scale));
-    const dh = Math.max(1, Math.round(sh * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = dw;
-    canvas.height = dh;
-    const ctx = canvas.getContext('2d');
-    // Front camera: mirror so the stored photo matches the mirrored preview.
-    if (this.facingMode === 'user') {
-      ctx.translate(dw, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(this.video, sx, sy, sw, sh, 0, 0, dw, dh);
-
-    return encodeCanvas(canvas);
+    const rect = cropByZoom({ sx: 0, sy: 0, sw: vw, sh: vh }, this._captureCrop);
+    return drawCrop(this.video, rect, this.facingMode === 'user');
   }
+
+  /**
+   * CAMERA-013: a still can be a different shape (and much larger) than the
+   * preview, so it is centre-cropped back to what the viewfinder framed before
+   * the digital-zoom crop is applied on top of it.
+   */
+  _drawStill(decoded, previewAspect) {
+    const source = decoded.source || decoded;
+    const { width, height } = decoded;
+    if (!width || !height) throw new Error('still-decode-failed');
+    const framed = cropToAspect(width, height, matchOrientation(previewAspect, width / height));
+    return drawCrop(source, cropByZoom(framed, this._captureCrop), this.facingMode === 'user');
+  }
+
+  /** The digital-zoom factor that applies to a capture right now (≥ 1). */
+  get _captureCrop() {
+    return this.cropAtCapture ? this.digitalZoom : 1;
+  }
+
+  async _encode(canvas) {
+    const stats = {};
+    const blob = await encodeCanvas(canvas, stats);
+    this.lastEncode = stats;
+    return blob;
+  }
+}
+
+/* ------------------------------------------------------- CAMERA-013 stills */
+
+let stillFallbackLogged = false;
+
+/** One line per session, not per shot — the shutter path stays quiet. */
+function noteStillFallback(reason) {
+  if (stillFallbackLogged) return;
+  stillFallbackLogged = true;
+  console.info('camera: still capture unavailable, using viewfinder frames', reason);
+}
+
+/**
+ * `takePhoto()` with no photo settings — the defaults are what the platform
+ * camera app uses. A few Androids reject the bare call complaining about
+ * constraints; those get exactly one retry with an explicit empty bag.
+ */
+async function takePhoto(track) {
+  const capturer = new ImageCapture(track);
+  try {
+    return await capturer.takePhoto();
+  } catch (err) {
+    if (!isConstraintError(err)) throw err;
+    return capturer.takePhoto({});
+  }
+}
+
+function isConstraintError(err) {
+  const name = err?.name || '';
+  if (name === 'OverconstrainedError' || name === 'NotSupportedError') return true;
+  return /constraint|settings/i.test(err?.message || '');
+}
+
+/** Reject once the budget is spent so a wedged takePhoto() cannot hold the shutter. */
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  const limit = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
+
+/** `from-image` so a sensor-orientation EXIF tag is baked into the pixels. */
+function decodeStill(blob) {
+  return decodeFile(blob, { imageOrientation: 'from-image' });
+}
+
+/* ------------------------------------------------------------ canvas maths */
+
+/**
+ * A still and the preview can disagree about orientation (a sensor-native
+ * portrait still behind a landscape track). Matching the preview's aspect
+ * literally would then throw most of the photo away, so the aspect is taken in
+ * the still's own orientation — the same framing, read the right way up.
+ */
+function matchOrientation(previewAspect, sourceAspect) {
+  if (!previewAspect || !isFinite(previewAspect)) return sourceAspect;
+  const disagree = (previewAspect >= 1) !== (sourceAspect >= 1);
+  return disagree ? 1 / previewAspect : previewAspect;
+}
+
+/** Largest centred rect of `width`×`height` with the given aspect (w/h). */
+function cropToAspect(width, height, aspect) {
+  if (!aspect || !isFinite(aspect)) return { sx: 0, sy: 0, sw: width, sh: height };
+  const current = width / height;
+  let sw = width;
+  let sh = height;
+  if (current > aspect) sw = Math.max(1, Math.round(height * aspect));
+  else if (current < aspect) sh = Math.max(1, Math.round(width / aspect));
+  return { sx: Math.round((width - sw) / 2), sy: Math.round((height - sh) / 2), sw, sh };
+}
+
+/** Shrink a rect around its own centre by the digital-zoom factor (CAMERA-006). */
+function cropByZoom(rect, factor) {
+  const f = Math.max(1, Number(factor) || 1);
+  if (f === 1) return rect;
+  const sw = Math.max(1, Math.round(rect.sw / f));
+  const sh = Math.max(1, Math.round(rect.sh / f));
+  return {
+    sx: rect.sx + Math.round((rect.sw - sw) / 2),
+    sy: rect.sy + Math.round((rect.sh - sh) / 2),
+    sw,
+    sh,
+  };
+}
+
+/** Draw one crop rect down to ≤MAX_EDGE, mirroring for the front camera. */
+function drawCrop(source, rect, mirror) {
+  const scale = Math.min(1, MAX_EDGE / Math.max(rect.sw, rect.sh));
+  const dw = Math.max(1, Math.round(rect.sw * scale));
+  const dh = Math.max(1, Math.round(rect.sh * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  // Front camera: mirror so the stored photo matches the mirrored preview.
+  if (mirror) {
+    ctx.translate(dw, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(source, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, dw, dh);
+  return canvas;
+}
+
+/** One line of encoder telemetry for the ?diag=1 sheet (CAMERA-007/013). */
+function describeEncode(stats) {
+  if (!stats) return 'none yet';
+  const kb = Math.round(stats.bytes / 1024);
+  return `${stats.width}×${stats.height}  q${stats.quality}  ${kb}KB  (${stats.steps} step${stats.steps === 1 ? '' : 's'})`;
 }
 
 function fadeOut(node) {
@@ -453,25 +643,60 @@ function fadeOut(node) {
   });
 }
 
-/** JPEG-encode a canvas, stepping quality down until ≈≤1MB (CAMERA-007). */
-async function encodeCanvas(canvas) {
+/**
+ * JPEG-encode a canvas at ≥2560px-friendly quality, stepping down towards
+ * ≈2.5MB but never below MIN_QUALITY — grain is worse than bytes (CAMERA-007).
+ * This encode is also what strips EXIF/GPS: nothing but pixels reaches the
+ * blob (CAMERA-008). `stats` is filled in for the ?diag=1 sheet and the tests.
+ */
+async function encodeCanvas(canvas, stats = {}) {
   let quality = JPEG_QUALITY;
-  let blob = await toBlob(canvas, quality);
+  let surface = canvas;
+  let blob = await toBlob(surface, quality);
+  let steps = 0;
   while (blob && blob.size > TARGET_BYTES && quality > MIN_QUALITY) {
-    quality = Math.max(MIN_QUALITY, quality - 0.12);
-    blob = await toBlob(canvas, quality);
+    quality = Math.max(MIN_QUALITY, round2(quality - QUALITY_STEP));
+    blob = await toBlob(surface, quality);
+    steps += 1;
+  }
+  // Hard floor on quality means a pathological frame could still be huge, and
+  // the upload cap is 8MB — resize rather than let it 403 at the bucket.
+  while (blob && blob.size > SAFETY_BYTES && Math.max(surface.width, surface.height) > MIN_SAFETY_EDGE) {
+    surface = downscale(surface, SAFETY_SCALE);
+    blob = await toBlob(surface, quality);
+    steps += 1;
   }
   if (!blob) throw new Error('encode-failed');
+  stats.width = surface.width;
+  stats.height = surface.height;
+  stats.quality = quality;
+  stats.bytes = blob.size;
+  stats.steps = steps;
   return blob;
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function downscale(canvas, factor) {
+  const next = document.createElement('canvas');
+  next.width = Math.max(1, Math.round(canvas.width * factor));
+  next.height = Math.max(1, Math.round(canvas.height * factor));
+  const ctx = next.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, next.width, next.height);
+  return next;
 }
 
 function toBlob(canvas, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
 }
 
-async function decodeFile(file) {
+async function decodeFile(file, options) {
   if (globalThis.createImageBitmap) {
-    try { return await createImageBitmap(file); } catch { /* fall through */ }
+    try {
+      return options ? await createImageBitmap(file, options) : await createImageBitmap(file);
+    } catch { /* fall through */ }
   }
   // Safari/lockdown fallback: decode through an <img> + object URL.
   const url = URL.createObjectURL(file);

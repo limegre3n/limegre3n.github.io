@@ -201,18 +201,73 @@ export const CAMERA_FIXTURES = {
  * Installs the fake before any page script runs. Exposes `window.__cam`:
  *   .applied  — [{ deviceId, constraints }] every applyConstraints call, in order
  *   .opened   — [deviceId | facingMode] every getUserMedia call, in order
+ *   .stills   — [{ settings }] every fake ImageCapture.takePhoto() call, in order
  *   .zooms(deviceId?) — just the zoom values, newest last
+ *
+ * `options` (all optional, defaults reproduce the pre-CAMERA-013 fake exactly):
+ *   video.width / video.height  — track resolution (default 1280×720)
+ *   video.pattern               — 'blocks' (default) | 'detail' | 'flat'
+ *   video.cell                  — cell size for the 'detail' pattern (default 6)
+ *   still                       — omit/false: `window.ImageCapture` is REMOVED, so
+ *                                 capture() is pinned to the frame-grab path.
+ *                                 Otherwise { width, height, mode, colors }:
+ *                                 mode 'ok' (default) | 'fail' (rejects) |
+ *                                 'slow' (never resolves) | 'constrained'
+ *                                 (rejects the bare call, resolves the `{}` retry).
  */
-export async function installFakeCamera(page, devices) {
-  await page.addInitScript((fixture) => {
-    const log = { applied: [], opened: [], granted: false };
+export async function installFakeCamera(page, devices, options = {}) {
+  await page.addInitScript(({ fixture, opts }) => {
+    const log = { applied: [], opened: [], stills: [], granted: false };
     log.zooms = (deviceId) => log.applied
       .filter((a) => (!deviceId || a.deviceId === deviceId))
       .map((a) => a.constraints?.advanced?.[0]?.zoom)
       .filter((z) => z !== undefined);
     window.__cam = log;
 
-    const SIZE = { width: 1280, height: 720 };
+    const videoOpts = opts.video || {};
+    const SIZE = { width: videoOpts.width || 1280, height: videoOpts.height || 720 };
+    const PATTERN = videoOpts.pattern || 'blocks';
+
+    /** Deterministic PRNG: the encoder assertions must not flap run to run. */
+    function lcg(seed) {
+      let state = seed >>> 0;
+      return () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+    }
+
+    /**
+     * A dense, photo-like pattern painted ONCE into an offscreen canvas: the
+     * live track then just blits it, so a 2560px fake stream stays cheap while
+     * still giving the JPEG encoder something incompressible to chew on.
+     */
+    function buildPattern(width, height) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (PATTERN === 'flat') {
+        const grad = ctx.createLinearGradient(0, 0, width, height);
+        grad.addColorStop(0, '#8fa5c8');
+        grad.addColorStop(1, '#c9d6e6');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
+        return canvas;
+      }
+      const cell = videoOpts.cell || 6;
+      const rand = lcg(20240613);
+      for (let y = 0; y < height; y += cell) {
+        for (let x = 0; x < width; x += cell) {
+          const r = 30 + Math.floor(rand() * 200);
+          const g = 30 + Math.floor(rand() * 200);
+          const b = 30 + Math.floor(rand() * 200);
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.fillRect(x, y, cell, cell);
+        }
+      }
+      return canvas;
+    }
 
     /** A canvas that keeps painting, so the track really delivers frames. */
     function makeTrack(dev) {
@@ -221,7 +276,7 @@ export async function installFakeCamera(page, devices) {
       canvas.height = SIZE.height;
       const ctx = canvas.getContext('2d');
       let frame = 0;
-      const paint = () => {
+      const blocks = () => {
         // A frame-filling border plus a centred block: cropping at capture is
         // visible in the output dimensions AND in the pixels.
         ctx.fillStyle = '#8c1f1f';
@@ -232,6 +287,16 @@ export async function installFakeCamera(page, devices) {
         ctx.fillRect(canvas.width / 2 - 60, canvas.height / 2 - 60 + (frame % 3), 120, 120);
         frame += 1;
       };
+      const prebuilt = PATTERN === 'blocks' ? null : buildPattern(canvas.width, canvas.height);
+      const paint = prebuilt
+        ? () => {
+          ctx.drawImage(prebuilt, 0, 0);
+          // A 2px corner tell so captureStream keeps emitting new frames.
+          ctx.fillStyle = frame % 2 ? '#000000' : '#ffffff';
+          ctx.fillRect(0, 0, 2, 2);
+          frame += 1;
+        }
+        : blocks;
       paint();
       const timer = setInterval(paint, 66);
       const stream = canvas.captureStream(15);
@@ -247,6 +312,68 @@ export async function installFakeCamera(page, devices) {
       track.stop = () => { clearInterval(timer); stopAll(); };
       return stream;
     }
+
+    /* ---------------------------------------------- CAMERA-013: fake stills */
+
+    const still = opts.still || null;
+    let stillBlob = null;
+
+    /**
+     * A four-quadrant plate at full "sensor" resolution — deliberately nothing
+     * like the video pattern, so a test can tell which source a shot came from
+     * by reading four pixels.
+     */
+    function drawStill() {
+      const canvas = document.createElement('canvas');
+      canvas.width = still.width || 4032;
+      canvas.height = still.height || 3024;
+      const ctx = canvas.getContext('2d');
+      const colors = still.colors || ['#00b7c3', '#d13fb8', '#f2e34a', '#1b2a6b'];
+      const hw = Math.round(canvas.width / 2);
+      const hh = Math.round(canvas.height / 2);
+      ctx.fillStyle = colors[0]; ctx.fillRect(0, 0, hw, hh);
+      ctx.fillStyle = colors[1]; ctx.fillRect(hw, 0, canvas.width - hw, hh);
+      ctx.fillStyle = colors[2]; ctx.fillRect(0, hh, hw, canvas.height - hh);
+      ctx.fillStyle = colors[3]; ctx.fillRect(hw, hh, canvas.width - hw, canvas.height - hh);
+      // A white centre pip: it survives every centre crop, so a lost centre is a bug.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(hw - 60, hh - 60, 120, 120);
+      return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+    }
+
+    function failure(name, message) {
+      const err = new Error(message);
+      err.name = name;
+      return err;
+    }
+
+    class FakeImageCapture {
+      constructor(track) {
+        if (!track || track.readyState !== 'live') throw failure('InvalidStateError', 'track not live');
+        this.track = track;
+      }
+
+      async takePhoto(settings) {
+        const call = log.stills.length;
+        log.stills.push({ settings: settings === undefined ? 'none' : settings });
+        const mode = still.mode || 'ok';
+        if (mode === 'fail') throw failure('UnknownError', 'takePhoto failed');
+        if (mode === 'constrained' && call === 0) {
+          throw failure('NotSupportedError', 'unsupported photo settings');
+        }
+        if (mode === 'slow') return new Promise(() => { /* never settles */ });
+        if (!stillBlob) stillBlob = await drawStill();
+        return stillBlob;
+      }
+    }
+
+    // No fake still requested → make sure the browser's own ImageCapture cannot
+    // pick the still path up, so frame-grab tests stay deterministic.
+    Object.defineProperty(window, 'ImageCapture', {
+      value: still ? FakeImageCapture : undefined,
+      configurable: true,
+      writable: true,
+    });
 
     function pick(constraints) {
       const video = constraints?.video || {};
@@ -285,7 +412,7 @@ export async function installFakeCamera(page, devices) {
       removeEventListener() {},
     };
     Object.defineProperty(navigator, 'mediaDevices', { value: fake, configurable: true });
-  }, devices);
+  }, { fixture: devices, opts: options });
 }
 
 /**

@@ -7,3 +7,4 @@
  * no browser) and run in milliseconds.
  */
 import './lens.test.mjs';
+import './grain.test.mjs';

@@ -4,12 +4,24 @@
  *
  * Runs entirely offline: no emulator, no Firestore, no Storage.
  *
- *   node scripts/develop-samples.js [--in photo.jpg] [--out /tmp/samples] [--no-stamp]
+ *   node scripts/develop-samples.js [--in photo.jpg] [--out /tmp/samples]
+ *                                   [--no-stamp] [--long 2560] [--sensor-noise 6]
  *
  * With no `--in` it synthesises a reference scene (sky, foliage, skin tones, a white
  * dress against a dark suit, plus colour and greyscale ramps) — enough to judge warmth,
- * saturation, black lift, grain and vignette without shipping a binary fixture.
- * Writes `stock-original.jpg` plus `stock-<id>.jpg` for every stock.
+ * saturation, black lift, grain and vignette without shipping a binary fixture. The
+ * scene is authored in 1600x1200 units and rasterised at `--long` (default 2560, the
+ * guest app's capture size) so the grain is judged at the size it will actually ship at.
+ *
+ * Writes, into `--out`:
+ *   stock-original.jpg, stock-<id>.jpg   the clean scene and its six developments
+ *   contact-sheet.jpg                    all six tiled, catalogue order, row-major
+ *   noisy-original.jpg, noisy-<id>.jpg   the same, over a scene carrying sensor noise
+ *   noisy-sheet.jpg                      (`--sensor-noise` sigma, default 6) — this is
+ *                                        the honest test: grain has to read as grain on
+ *                                        top of a phone frame that is already noisy
+ *   crop-<id>.png                        100 % crops over the mid-grey ramp patches,
+ *                                        for silver and golden, clean and noisy
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,13 +40,21 @@ function arg(name, fallback = null) {
 const outDir = arg('out', '/tmp/film-samples');
 const inPath = arg('in', null);
 const withStamp = !process.argv.includes('--no-stamp');
+/** Long edge of the rasterised scene — the guest app uploads at 2560 (CAMERA-007). */
+const LONG_EDGE = Math.max(320, Number(arg('long', 2560)) || 2560);
+/** Sensor noise added to the "dim room" variant, in 0..255 units. */
+const SENSOR_SIGMA = Math.max(0, Number(arg('sensor-noise', 6)) || 6);
 
+/** Scene authoring units. The SVG below is written against these. */
 const WIDTH = 1600;
 const HEIGHT = 1200;
+/** Rasterised size: the authoring units scaled up to LONG_EDGE via the viewBox. */
+const OUT_W = Math.round(LONG_EDGE);
+const OUT_H = Math.round((LONG_EDGE * HEIGHT) / WIDTH);
 
 /** A synthetic "wedding photo" with the tones every recipe is judged on. */
 function referenceScene() {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${OUT_W}" height="${OUT_H}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#5c8fc4"/>
@@ -97,17 +117,108 @@ function referenceScene() {
   return sharp(Buffer.from(svg)).jpeg({ quality: 92 }).toBuffer();
 }
 
+/**
+ * Additive gaussian sensor noise, the kind a phone puts in a dim-room frame before the
+ * developer ever sees it. Per channel and NOT luminance-weighted — that is the point:
+ * it is the thing film grain has to stay distinguishable from.
+ *
+ * @param {Buffer} jpeg
+ * @param {number} sigma  0..255 units
+ * @returns {Promise<Buffer>}
+ */
+async function addSensorNoise(jpeg, sigma) {
+  if (sigma <= 0) return jpeg;
+  const { data, info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
+  let i = 0;
+  while (i < data.length) {
+    let u = 0;
+    let v = 0;
+    let s = 0;
+    do {
+      u = Math.random() * 2 - 1;
+      v = Math.random() * 2 - 1;
+      s = u * u + v * v;
+    } while (s === 0 || s >= 1);
+    const m = Math.sqrt((-2 * Math.log(s)) / s) * sigma;
+    data[i] = Math.max(0, Math.min(255, Math.round(data[i] + u * m)));
+    i += 1;
+    if (i < data.length) {
+      data[i] = Math.max(0, Math.min(255, Math.round(data[i] + v * m)));
+      i += 1;
+    }
+  }
+  return sharp(data, { raw: info }).jpeg({ quality: 92 }).toBuffer();
+}
+
+/** Every stock at a glance: catalogue order, row-major, three across. */
+async function contactSheet(buffers) {
+  const cols = 3;
+  const rows = Math.ceil(buffers.length / cols);
+  const tileW = 720;
+  const tileH = Math.round((tileW * OUT_H) / OUT_W);
+  const gap = 12;
+  const tiles = await Promise.all(buffers.map(async (buf, i) => ({
+    input: await sharp(buf).resize(tileW, tileH, { fit: 'fill' }).toBuffer(),
+    left: gap + (i % cols) * (tileW + gap),
+    top: gap + Math.floor(i / cols) * (tileH + gap),
+  })));
+  return sharp({
+    create: {
+      width: cols * tileW + (cols + 1) * gap,
+      height: rows * tileH + (rows + 1) * gap,
+      channels: 3,
+      background: '#141414',
+    },
+  }).composite(tiles).jpeg({ quality: 90 }).toBuffer();
+}
+
+/**
+ * A 1:1 crop across the greyscale ramp (#202020 → #b3b3b3) and the sky above it — flat
+ * areas, where grain either reads as film or reads as noise. PNG so nothing is hidden
+ * by a second round of JPEG, and always off a stamp-free development so seven-segment
+ * digits do not land in the middle of the one thing the crop exists to show.
+ */
+function midGreyCrop(buffer) {
+  const s = OUT_W / WIDTH;
+  const left = Math.round(940 * s);
+  const top = Math.round(960 * s);
+  const width = Math.min(Math.round(400 * s), OUT_W - left);
+  const height = Math.min(Math.round(215 * s), OUT_H - top);
+  return sharp(buffer).extract({ left, top, width, height }).png().toBuffer();
+}
+
 mkdirSync(outDir, { recursive: true });
 const original = inPath ? readFileSync(inPath) : await referenceScene();
+const noisyOriginal = await addSensorNoise(original, SENSOR_SIGMA);
 writeFileSync(join(outDir, 'stock-original.jpg'), original);
+writeFileSync(join(outDir, 'noisy-original.jpg'), noisyOriginal);
 
 // A fixed date so repeated runs are byte-comparable; matches the contract example.
 const stampText = withStamp ? dateStampText(Date.UTC(2026, 8, 13, 4, 30), 480) : null;
 
+const CROP_STOCKS = new Set(['silver', 'golden']);
+const sheets = { stock: [], noisy: [] };
+
 for (const stock of FILM_STOCKS.stocks) {
-  const out = await developBuffer(original, { recipe: stockRecipe(stock.id), stampText });
-  const file = join(outDir, `stock-${stock.id}.jpg`);
-  writeFileSync(file, out);
-  console.log(`${stock.id.padEnd(9)} ${String(out.length).padStart(8)} bytes  ${file}`);
+  const recipe = stockRecipe(stock.id);
+  for (const [prefix, src] of [['stock', original], ['noisy', noisyOriginal]]) {
+    const started = Date.now();
+    const out = await developBuffer(src, { recipe, stampText });
+    sheets[prefix].push(out);
+    const file = join(outDir, `${prefix}-${stock.id}.jpg`);
+    writeFileSync(file, out);
+    console.log(`${prefix.padEnd(5)} ${stock.id.padEnd(9)} ${String(out.length).padStart(8)} bytes`
+      + `  ${String(Date.now() - started).padStart(5)} ms  ${file}`);
+    if (!CROP_STOCKS.has(stock.id)) continue;
+    const cropName = prefix === 'stock' ? `crop-${stock.id}.png` : `crop-noisy-${stock.id}.png`;
+    const bare = stampText ? await developBuffer(src, { recipe, stampText: null }) : out;
+    writeFileSync(join(outDir, cropName), await midGreyCrop(bare));
+  }
 }
-console.log(`\noriginal: ${join(outDir, 'stock-original.jpg')}   stamp: ${stampText || '(none)'}`);
+
+writeFileSync(join(outDir, 'contact-sheet.jpg'), await contactSheet(sheets.stock));
+writeFileSync(join(outDir, 'noisy-sheet.jpg'), await contactSheet(sheets.noisy));
+
+const order = FILM_STOCKS.stocks.map((s) => s.id).join(', ');
+console.log(`\nscene: ${OUT_W}x${OUT_H}   sensor noise sigma: ${SENSOR_SIGMA}   stamp: ${stampText || '(none)'}`);
+console.log(`sheets: ${join(outDir, 'contact-sheet.jpg')} / noisy-sheet.jpg — row-major: ${order}`);
