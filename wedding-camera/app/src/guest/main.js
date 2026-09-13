@@ -19,7 +19,11 @@ import {
 import { auth, db } from '../lib/firebase.js';
 import { applyTheme } from '../lib/theme.js';
 import { Camera, reencodeFile } from './camera.js';
+import { mountZoomControl } from './zoom-ui.js';
 import { queue } from './queue.js';
+import {
+  currentStockId, mountDateStamp, mountFilm, tzOffsetMinutes,
+} from './film-ui.js';
 
 const appEl = document.getElementById('app');
 const liveEl = document.getElementById('live');
@@ -29,7 +33,6 @@ const WIND_ON_MS = 800;
 /** Screen-flash duration for the front camera (CONTRACTS §8). */
 const SCREEN_FLASH_MS = 300;
 const FLASH_PRE_MS = 140;
-const ZOOM_STEPS = [1, 1.5, 2];
 /** Give up on the in-page viewfinder and offer the phone camera after this long. */
 const CAMERA_START_TIMEOUT_MS = 10_000;
 
@@ -47,7 +50,7 @@ const state = {
   routeQueued: false,
   flashArmed: false,
   torchOn: false,
-  zoomIndex: 0,
+  zoom: null,           // zoom-ui.js handle; the magnification lives on the Camera
   ephemeralToasted: false,
   cleanups: [],
   lastAnnounced: '',
@@ -666,35 +669,33 @@ async function renderViewfinder() {
   const flashBtn = el('button', {
     type: 'button', class: 'ctl', 'aria-label': 'Flash off', 'aria-pressed': 'false',
   }, '⚡');
-  const zoomBtn = el('button', {
-    type: 'button', class: 'ctl zoom', 'aria-label': 'Zoom level, 1 times',
-  }, '1×');
+  // CAMERA-010: zoom is a step-less lens slider, not a stepping button, so it
+  // gets its own full-width row between the chassis bar and the shutter — always
+  // thumb-reachable, never overlapping the shutter. zoom-ui.js fills this host.
+  const zoomHost = el('div', { class: 'deck__zoom' });
   leftSlot.append(flipBtn);
   row.append(leftSlot, shutter, rightSlot);
-  deck.append(bar, row);
+  deck.append(bar, zoomHost, row);
 
   /**
-   * The control row always shows three filled slots — [flip] [shutter] [x].
-   * Where flash is available (front camera, or a torch-capable rear track) it
-   * takes the right slot and zoom becomes a pill in the chassis bar; otherwise
-   * zoom takes the right slot and the counter simply fills the bar. No holes,
-   * no floating pills.
+   * The control row is [flip] [shutter] [flash]. The flash button appears only
+   * where flash exists (front camera, or a torch-capable rear track); the right
+   * slot is otherwise left empty so the shutter stays centred under the thumb.
    */
   function layoutControls(flashAvailable) {
     if (flashAvailable) {
-      zoomBtn.className = 'zoom zoom--pill';
-      if (zoomBtn.parentElement !== bar) bar.append(zoomBtn);
       if (flashBtn.parentElement !== rightSlot) rightSlot.append(flashBtn);
-    } else {
-      if (flashBtn.parentElement) flashBtn.remove();
-      zoomBtn.className = 'ctl zoom';
-      if (zoomBtn.parentElement !== rightSlot) rightSlot.append(zoomBtn);
+    } else if (flashBtn.parentElement) {
+      flashBtn.remove();
     }
-    zoomBtn.classList.toggle('on', ZOOM_STEPS[state.zoomIndex] > 1);
   }
   layoutControls(false); // torch capability is unknown until the stream is live
 
   vf.append(stage, deck);
+  // CAMERA-011: the film dial sits between the frame and the chassis, and owns the
+  // live look (video `filter` + grain/vignette layers) — never the video transform.
+  const film = mountFilm({ host: vf, stage, video, before: deck });
+  state.cleanups.push(film.destroy);
   mount(vf);
 
   /* ---- chrome refresh ---- */
@@ -720,6 +721,13 @@ async function renderViewfinder() {
   };
 
   refreshChrome(); // fill the counter window before the stream warms up
+
+  // CAMERA-012: quartz date-back preview, live with config/event.dateStamp (which
+  // may be absent = on). Preview only — the capture draws the video, not the DOM.
+  const stamp = mountDateStamp(stage, () => state.cfg?.dateStamp !== false);
+  const chromeWithoutStamp = refreshChrome;
+  refreshChrome = () => { chromeWithoutStamp(); stamp.update(); };
+  state.cleanups.push(stamp.destroy);
 
   on(queue, 'change', (e) => {
     const detail = e.detail || {};
@@ -800,8 +808,10 @@ async function renderViewfinder() {
     state.cameraReady = false;
     refreshChrome();
     try {
+      // Camera.flip() swaps in the ladder for that side and restores the
+      // magnification the guest last chose there (CAMERA-010).
       await state.camera.flip();
-      await state.camera.applyZoom(ZOOM_STEPS[state.zoomIndex]);
+      state.zoom?.refresh();
       await applyFlashState();
     } catch (err) {
       toast('Couldn’t switch camera.');
@@ -811,18 +821,18 @@ async function renderViewfinder() {
     refreshChrome();
   });
 
-  zoomBtn.addEventListener('click', async () => {
-    sfx.arm();
-    state.zoomIndex = (state.zoomIndex + 1) % ZOOM_STEPS.length;
-    const z = ZOOM_STEPS[state.zoomIndex];
-    zoomBtn.textContent = `${z}×`;
-    zoomBtn.classList.toggle('on', z > 1);
-    zoomBtn.setAttribute('aria-label', `Zoom level, ${z} times`);
-    await state.camera.applyZoom(z).catch(() => {});
+  /* ---- zoom: step-less lens slider (CAMERA-006 / CAMERA-010) ----
+   * The Camera owns the ladder (which lens 1× really is) and the magnification;
+   * zoom-ui.js owns the slider, the pinch gesture and the ?diag=1 sheet. The
+   * default is always 1× — the phone's main wide lens, never the ultra-wide. */
+  state.zoom = mountZoomControl({
+    host: zoomHost,
+    camera: state.camera,
+    gestureTarget: stage,
+    sfx,
+    onChange: (mag) => announce(`Zoom ${mag.toFixed(1)} times`),
   });
-  zoomBtn.textContent = `${ZOOM_STEPS[state.zoomIndex]}×`;
-  zoomBtn.classList.toggle('on', ZOOM_STEPS[state.zoomIndex] > 1);
-  await state.camera.applyZoom(ZOOM_STEPS[state.zoomIndex]).catch(() => {});
+  state.cleanups.push(() => { state.zoom?.destroy(); state.zoom = null; });
 
   /* ---- shutter (CAMERA-003 / CAMERA-004: no preview, ever) ---- */
   shutter.addEventListener('click', async () => {
@@ -858,7 +868,13 @@ async function renderViewfinder() {
 
     if (blob) {
       try {
-        await queue.enqueue(blob, Date.now()); // IndexedDB before any upload (UPLOAD-001)
+        // IndexedDB before any upload (UPLOAD-001). The bytes stay the clean
+        // original; only the stock id and this phone's clock offset ride along
+        // as metadata, both captured now, at shot time (CONTRACTS §11).
+        await queue.enqueue(blob, Date.now(), {
+          filter: currentStockId(),
+          tzOffsetMinutes: tzOffsetMinutes(),
+        });
       } catch (err) {
         console.error('enqueue-failed', err);
         toast('That photo couldn’t be saved — try again.');

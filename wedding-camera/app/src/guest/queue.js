@@ -5,7 +5,7 @@
  *
  * Public API consumed by workstream ① (CONTRACTS §11):
  *   queue.init()                        → Promise (idempotent; safe to call repeatedly)
- *   queue.enqueue(blob, capturedAt)     → Promise<uuid>
+ *   queue.enqueue(blob, capturedAt, {filter, tzOffsetMinutes}) → Promise<uuid>
  *   queue.pendingCount                  → number of not-yet-settled items
  *   queue.persistent                    → true = IndexedDB-backed, false = memory-only
  *   queue.addEventListener('change', …) / queue.on('change', …) → unsubscribe fn
@@ -58,6 +58,32 @@ function idb(dbHandle, mode, fn) {
 function isUsableBlob(blob) {
   return !!blob && typeof blob.size === 'number' && blob.size > 0
     && typeof blob.arrayBuffer === 'function';
+}
+
+/**
+ * Film-development metadata (CONTRACTS §11, CAMERA-011). Both keys are advisory:
+ * an unknown stock or a nonsense offset degrades quietly server-side and can never
+ * cost a snap. Records written before this shipped simply carry neither, so they
+ * upload exactly as they did before (migration is "leave them alone").
+ */
+function shotMetadata({ filter, tzOffsetMinutes } = {}) {
+  const meta = {};
+  if (typeof filter === 'string' && filter) meta.filter = filter;
+  // Captured at SHOT time, never at upload time: the guest may be in a different
+  // place (or a different DST offset) by the time the queue drains.
+  const tz = Number(tzOffsetMinutes);
+  meta.tzOffsetMinutes = Number.isFinite(tz) ? Math.round(tz) : -new Date().getTimezoneOffset();
+  return meta;
+}
+
+/** Storage customMetadata for one item — only the keys the record actually has. */
+function uploadMetadata(item) {
+  const custom = { capturedAt: String(item.capturedAt) };
+  if (typeof item.filter === 'string' && item.filter) custom.filter = item.filter;
+  if (Number.isFinite(item.tzOffsetMinutes)) {
+    custom.tzOffsetMinutes = String(item.tzOffsetMinutes);
+  }
+  return custom;
 }
 
 class UploadQueue extends EventTarget {
@@ -151,6 +177,9 @@ class UploadQueue extends EventTarget {
       this.items.set(rec.uuid, {
         uuid: rec.uuid,
         capturedAt: rec.capturedAt || Date.now(),
+        // CONTRACTS §11 — absent on records queued before film stocks shipped.
+        filter: typeof rec.filter === 'string' ? rec.filter : undefined,
+        tzOffsetMinutes: Number.isFinite(rec.tzOffsetMinutes) ? rec.tzOffsetMinutes : undefined,
         attemptCount: Number(rec.attemptCount) || 0,
         // Survives the reload so a write-once refusal after a restart is still read as
         // "already stored, waiting for a verdict" rather than as an upload failure.
@@ -176,10 +205,17 @@ class UploadQueue extends EventTarget {
     auth.onAuthStateChanged?.((user) => { if (user) this.pumpAll(true); });
   }
 
-  async enqueue(blob, capturedAt = Date.now()) {
+  async enqueue(blob, capturedAt = Date.now(), shot = {}) {
     if (!isUsableBlob(blob)) throw new TypeError('enqueue requires a non-empty Blob');
     const uuid = crypto.randomUUID();
-    this.items.set(uuid, { uuid, capturedAt, attemptCount: 0, uploaded: false, state: 'queued' });
+    this.items.set(uuid, {
+      uuid,
+      capturedAt,
+      ...shotMetadata(shot),
+      attemptCount: 0,
+      uploaded: false,
+      state: 'queued',
+    });
     this.blobs.set(uuid, blob);
     // UPLOAD-001: persisted before any network attempt.
     await this.#persist(uuid);
@@ -198,6 +234,10 @@ class UploadQueue extends EventTarget {
       uuid,
       blob,
       capturedAt: item.capturedAt,
+      // Persisted with the payload so a photo queued offline still carries the
+      // stock and the clock offset it was SHOT with (CONTRACTS §11).
+      filter: item.filter,
+      tzOffsetMinutes: item.tzOffsetMinutes,
       attemptCount: item.attemptCount,
       uploaded: item.uploaded === true,
       // Persisted resume state is always 'queued' (see #restore).
@@ -260,7 +300,7 @@ class UploadQueue extends EventTarget {
       try {
         await uploadBytes(objectRef, blob, {
           contentType: 'image/jpeg',
-          customMetadata: { capturedAt: String(item.capturedAt) },
+          customMetadata: uploadMetadata(item),
         });
       } catch (err) {
         // Write-once rule rejects re-PUT of an already-stored object: that means the

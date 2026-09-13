@@ -12,7 +12,7 @@ import {
   onAuthStateChanged, signInWithEmailAndPassword, signOut,
 } from 'firebase/auth';
 import {
-  collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, writeBatch,
+  collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, updateDoc, writeBatch,
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
@@ -190,6 +190,7 @@ function renderControls() {
   const releaseBtn = $('release-btn');
 
   $('live-btn').disabled = !eventConfig || !eventConfig.slug; // ADMIN-010
+  renderStampToggle();                                      // ADMIN-011
   if (!eventConfig) {
     pausePill.textContent = 'Uploads —';
     releasePill.textContent = 'Gallery —';
@@ -214,6 +215,90 @@ function renderControls() {
 
   if (eventConfig.coupleNames) $('couple-names').textContent = eventConfig.coupleNames;
 }
+
+/* ── film development (ADMIN-011 / CONTRACTS §11) ──────────────────── */
+/* The stamp switch is plain config: the rules audit enum has no action for it,
+ * so it is written on its own with no audit doc. Changing it only changes what
+ * the NEXT develop burns in — "Redevelop all photos" is what applies it to the
+ * album the couple already have. */
+const REDEVELOP_LABEL = 'Redevelop all photos';
+const REDEVELOP_PAGE = 100;
+let stampBusy = false;
+let redeveloping = false;
+
+/** Absent means on (CONTRACTS §2: `dateStamp` arrived after launch). */
+function stampOn() {
+  return !eventConfig || eventConfig.dateStamp !== false;
+}
+
+function renderStampToggle() {
+  const box = $('stamp-toggle');
+  // Never fight the couple's finger: while their write is in flight the switch keeps
+  // showing what they just chose, and the config snapshot settles it afterwards.
+  if (!stampBusy) box.checked = stampOn();
+  box.disabled = !eventConfig || stampBusy || redeveloping;
+  $('redevelop-btn').disabled = redeveloping;
+}
+
+$('stamp-toggle').addEventListener('change', async () => {
+  const box = $('stamp-toggle');
+  const next = box.checked;
+  stampBusy = true;
+  renderStampToggle();
+  try {
+    await updateDoc(doc(db, 'config', 'event'), { dateStamp: next });
+    // Apply locally too: the snapshot lands a beat later and would otherwise flip
+    // the switch back for that beat.
+    if (eventConfig) eventConfig = { ...eventConfig, dateStamp: next };
+    toast(next
+      ? 'Date stamp on — redevelop to put it on existing photos.'
+      : 'Date stamp off — redevelop to take it off existing photos.', 'good');
+  } catch (error) {
+    box.checked = !next; // put the switch back where the couple found it
+    reportError('Could not change the date stamp', error);
+  } finally {
+    stampBusy = false;
+    renderStampToggle();
+  }
+});
+
+/**
+ * Re-develops the whole album one page at a time (CONTRACTS §5 `redevelopAll`):
+ * the callable returns `remaining` and a cursor, so the loop here is what keeps a
+ * 1,000-photo album inside the 540s function ceiling.
+ */
+$('redevelop-btn').addEventListener('click', async () => {
+  const btn = $('redevelop-btn');
+  if (redeveloping) return;
+  redeveloping = true;
+  btn.classList.add('spin');
+  renderStampToggle();
+  const call = httpsCallable(functions, 'redevelopAll');
+  let done = 0;
+  let startAfter = null;
+  try {
+    for (;;) {
+      btn.textContent = `Redeveloping… ${done} done`;
+      // eslint-disable-next-line no-await-in-loop -- pages are strictly sequential
+      const res = await call(startAfter
+        ? { limit: REDEVELOP_PAGE, startAfter }
+        : { limit: REDEVELOP_PAGE });
+      const data = res && res.data ? res.data : {};
+      done += Number(data.processed) || 0;
+      btn.textContent = `Redeveloping… ${done} done`;
+      startAfter = typeof data.lastUuid === 'string' ? data.lastUuid : null;
+      if (data.remaining !== true || !startAfter) break;
+    }
+    toast(`Redeveloped ${done} photo${done === 1 ? '' : 's'}.`, 'good');
+  } catch (error) {
+    reportError('Could not redevelop the photos', error);
+  } finally {
+    redeveloping = false;
+    btn.classList.remove('spin');
+    btn.textContent = REDEVELOP_LABEL;
+    renderStampToggle();
+  }
+});
 
 $('pause-btn').addEventListener('click', async () => {
   if (!eventConfig) return;
@@ -315,10 +400,14 @@ $('zip-btn').addEventListener('click', async () => {
   btn.textContent = 'Zipping…';
   try {
     const call = httpsCallable(functions, 'exportZip');
-    const res = await call({ includeHidden: false });
+    // ADMIN-006: developed copies by default (what the gallery shows); the
+    // checkbox packs the untouched originals instead (CONTRACTS §5).
+    const developed = !$('zip-originals').checked;
+    const res = await call({ includeHidden: false, developed });
     const data = res && res.data ? res.data : {};
     if (!data.url) throw new Error('no url returned');
-    toast(`ZIP ready — ${data.count ?? 0} photo${data.count === 1 ? '' : 's'}.`, 'good');
+    toast(`${developed ? 'ZIP' : 'Originals ZIP'} ready — `
+      + `${data.count ?? 0} photo${data.count === 1 ? '' : 's'}.`, 'good');
     window.open(data.url, '_blank', 'noopener');
   } catch (error) {
     reportError('ZIP export failed', error);

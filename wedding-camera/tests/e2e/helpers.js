@@ -161,3 +161,154 @@ export async function reconcileNow(data = {}) {
   if (!res.ok || body.error) throw new Error(`reconcileNow failed: ${JSON.stringify(body)}`);
   return body.result;
 }
+
+/* ==========================================================================
+   Fake camera for the zoom suite (CAMERA-006 / CAMERA-010).
+
+   Chromium's own `--use-fake-device-for-media-stream` gives one camera with no
+   zoom capability and no useful label, which is exactly the ONE case the lens
+   ladder does not need to reason about. `installFakeCamera` replaces
+   navigator.mediaDevices with a scripted one so a test can pose as an iPhone
+   with a virtual multi-lens device, a phone with several fixed lenses, or a
+   plain single camera — and can then read back every applyConstraints call the
+   app made. The tracks are real (canvas.captureStream), so <video> really plays
+   and `Camera.capture()` really re-encodes pixels.
+   ========================================================================== */
+
+/** Device/capability fixtures mirroring tests/unit/lens.test.mjs. */
+export const CAMERA_FIXTURES = {
+  /** iPhone 12-class: one virtual device whose native 1.0 IS the ultra-wide. */
+  dualWide: [
+    {
+      deviceId: 'back-dual-wide',
+      label: 'Back Dual Wide Camera',
+      caps: { facingMode: ['environment'], zoom: { min: 1, max: 8, step: 0.1 } },
+    },
+    { deviceId: 'front-cam', label: 'Front Camera', caps: { facingMode: ['user'] } },
+  ],
+  /** Single back camera, no zoom capability — the digital 1–2× fallback. */
+  single: [
+    { deviceId: 'back-plain', label: 'Back Camera', caps: { facingMode: ['environment'] } },
+  ],
+  /** Two fixed back lenses, neither zoomable — stream-switching ladder. */
+  discrete: [
+    { deviceId: 'back-ultra', label: 'Back Ultra Wide Camera', caps: { facingMode: ['environment'] } },
+    { deviceId: 'back-wide', label: 'Back Camera', caps: { facingMode: ['environment'] } },
+  ],
+};
+
+/**
+ * Installs the fake before any page script runs. Exposes `window.__cam`:
+ *   .applied  — [{ deviceId, constraints }] every applyConstraints call, in order
+ *   .opened   — [deviceId | facingMode] every getUserMedia call, in order
+ *   .zooms(deviceId?) — just the zoom values, newest last
+ */
+export async function installFakeCamera(page, devices) {
+  await page.addInitScript((fixture) => {
+    const log = { applied: [], opened: [], granted: false };
+    log.zooms = (deviceId) => log.applied
+      .filter((a) => (!deviceId || a.deviceId === deviceId))
+      .map((a) => a.constraints?.advanced?.[0]?.zoom)
+      .filter((z) => z !== undefined);
+    window.__cam = log;
+
+    const SIZE = { width: 1280, height: 720 };
+
+    /** A canvas that keeps painting, so the track really delivers frames. */
+    function makeTrack(dev) {
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE.width;
+      canvas.height = SIZE.height;
+      const ctx = canvas.getContext('2d');
+      let frame = 0;
+      const paint = () => {
+        // A frame-filling border plus a centred block: cropping at capture is
+        // visible in the output dimensions AND in the pixels.
+        ctx.fillStyle = '#8c1f1f';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#2f6d3a';
+        ctx.fillRect(120, 68, canvas.width - 240, canvas.height - 136);
+        ctx.fillStyle = '#e8b04b';
+        ctx.fillRect(canvas.width / 2 - 60, canvas.height / 2 - 60 + (frame % 3), 120, 120);
+        frame += 1;
+      };
+      paint();
+      const timer = setInterval(paint, 66);
+      const stream = canvas.captureStream(15);
+      const track = stream.getVideoTracks()[0];
+      const caps = Object.assign({ deviceId: dev.deviceId }, dev.caps || {});
+      track.getCapabilities = () => JSON.parse(JSON.stringify(caps));
+      track.getSettings = () => ({ deviceId: dev.deviceId, width: SIZE.width, height: SIZE.height });
+      track.applyConstraints = async (constraints) => {
+        log.applied.push({ deviceId: dev.deviceId, constraints: JSON.parse(JSON.stringify(constraints || {})) });
+      };
+      try { Object.defineProperty(track, 'label', { get: () => dev.label, configurable: true }); } catch { /* ignore */ }
+      const stopAll = track.stop.bind(track);
+      track.stop = () => { clearInterval(timer); stopAll(); };
+      return stream;
+    }
+
+    function pick(constraints) {
+      const video = constraints?.video || {};
+      const exact = video.deviceId?.exact || video.deviceId;
+      if (typeof exact === 'string') {
+        const hit = fixture.find((d) => d.deviceId === exact);
+        if (hit) return hit;
+        const err = new Error('device not found');
+        err.name = 'OverconstrainedError';
+        throw err;
+      }
+      const want = video.facingMode?.exact || video.facingMode || 'environment';
+      return fixture.find((d) => (d.caps?.facingMode || []).includes(want)) || fixture[0];
+    }
+
+    const fake = {
+      async getUserMedia(constraints) {
+        const dev = pick(constraints);
+        log.granted = true;
+        log.opened.push(dev.deviceId);
+        return makeTrack(dev);
+      },
+      async enumerateDevices() {
+        // Labels are empty until permission is granted — the real behaviour the
+        // lens heuristics have to survive.
+        return fixture.map((d) => ({
+          deviceId: d.deviceId,
+          kind: 'videoinput',
+          label: log.granted ? d.label : '',
+          groupId: 'grp',
+          toJSON() { return this; },
+        }));
+      },
+      getSupportedConstraints: () => ({ zoom: true, torch: true, facingMode: true }),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    Object.defineProperty(navigator, 'mediaDevices', { value: fake, configurable: true });
+  }, devices);
+}
+
+/**
+ * Drives the guest page to a live viewfinder: registers the phone if the
+ * welcome card appears, then waits for the stream. Returns nothing; throws on
+ * any terminal card (closed window, denied camera) so failures are legible.
+ */
+export async function openViewfinder(page, nickname = 'Zoom Tester') {
+  const app = page.locator('#app');
+  await page.waitForFunction(
+    () => document.getElementById('app')?.dataset.state
+      && document.getElementById('app').dataset.state !== 'loading',
+    null,
+    { timeout: 30_000 },
+  );
+  const state = await app.getAttribute('data-state');
+  if (state === 'welcome') {
+    await page.fill('#guest-nickname', nickname);
+    await page.click('.btn--primary');
+  }
+  await page.waitForFunction(
+    () => document.getElementById('app')?.dataset.camera === 'live',
+    null,
+    { timeout: 45_000 },
+  );
+}

@@ -60,10 +60,19 @@ after the event.
 - **CAMERA-003**: Shutter tap captures a still, plays shutter sound + wind-on animation, decrements the on-screen counter (optimistic allowed, must reconcile with server).
 - **CAMERA-004**: No captured photo is ever displayed to the guest.
 - **CAMERA-005**: Torch toggle appears only when the active track reports torch capability; front camera uses full-brightness white "screen flash".
-- **CAMERA-006**: Zoom uses the native `zoom` constraint where supported, else center-crop digital zoom up to 2×.
+- **CAMERA-006**: Zoom is a **step-less** control (slider + pinch), not fixed steps. It uses the native `zoom` constraint where supported, switches between separate back cameras where that is the only lens control available, and falls back to center-crop digital zoom up to 2× otherwise. Displayed magnification is always a **true** magnification (see CAMERA-010), and the capture is cropped by exactly the digital factor in play.
 - **CAMERA-007**: Photos re-encoded on device to JPEG, longest edge 2048px, target ≤1MB.
 - **CAMERA-008**: Re-encode strips ALL source metadata (EXIF/GPS); only nickname, device uid, capture timestamp attach server-side.
 - **CAMERA-009**: If getUserMedia is unavailable or denied, offer native-camera fallback (`<input type="file" accept="image/*" capture="environment">`) through the same compress/queue/upload pipeline and quota.
+- **CAMERA-010**: **1× means the phone's main wide lens, on every handset.** The app builds a *lens ladder* from `enumerateDevices()` labels plus the active track's `getCapabilities()`, and shows the guest a magnification, never a raw constraint value:
+  - iOS `facingMode: environment` often returns a virtual multi-lens device ("Back Dual Wide Camera", "Back Triple Camera") whose native zoom `1.0` is the **ultra-wide**; WebKit does not normalise this, so the app calibrates `oneX = 2` for those labels and displays `native / oneX`. Shipping `1.0` as "1×" is the defect this requirement exists to prevent.
+  - Android logical cameras that already normalise (capability `min < 0.95`, e.g. Samsung `0.5–10`) use `oneX = 1`; a plain `Back Camera` / `camera2 0, facing back` uses `oneX = min`.
+  - Where no back camera exposes a zoom range but several exist, they are treated as fixed lenses (Ultra Wide → 0.5×, default → 1×, Telephoto → 2× or its stated factor) and the stream switches as the guest crosses a rung, cropping the lower lens in between. Capability probing of non-active cameras costs ~300 ms each, so at most 3, once per page view.
+  - Ticks are shown at the rungs the hardware actually supports (0.5×/1×/2×/3×/5×); anything past the last real lens is drawn dimmed/hatched so guests can see where quality drops. The slider stops at 8×.
+  - The camera **opens at 1×** every time, including after a front↔rear flip (which restores the last magnification for that side).
+  - `?diag=1` shows a dismissible, copyable text sheet with the UA, every device + capability range, the resolved ladder and the live mapping — for tuning the heuristics against real handsets.
+- **CAMERA-011**: The guest picks a **film stock** on a dial under the viewfinder — a snap-scrolling strip of swatches (`clean`, `golden`, `seaside`, `portrait`, `silver`, `faded`), the centred one being the loaded film. Tap, swipe or arrow keys move it, it is a `radiogroup`, it vibrates lightly on change and the pick is remembered on the phone (`wc.filter`, default `clean`). The live viewfinder previews that stock (CSS filter + grain + vignette), but the **upload is always the clean re-encoded original**: only the stock id and the phone's UTC offset ride along as metadata, and the server develops the look into a second copy (CONTRACTS §11). The dial stays usable in the landscape grip layout and never covers the frame centre or the shutter.
+- **CAMERA-012**: When the event has the date stamp switched on (`config/event.dateStamp`, ADMIN-011), the viewfinder shows a **90s quartz date-back preview** in the bottom-right corner — orange seven-segment-style `'YY M D` from the phone's own clock. It is a preview only: the capture draws the video, never the DOM, so nothing is burned into the JPEG on the phone.
 
 ### Upload
 - **UPLOAD-001**: Every capture is written to IndexedDB before any upload attempt.
@@ -82,7 +91,7 @@ after the event.
 - **ADMIN-003**: Hide/unhide any photo; hidden photos never appear in the gallery.
 - **ADMIN-004**: Pause/resume all uploads with one toggle, server-enforced within ≤10s.
 - **ADMIN-005**: Grant additional snaps to a specific device (listed by nickname).
-- **ADMIN-006**: One-click ZIP of all visible (optionally all) photos at stored quality, filenames = timestamp + nickname.
+- **ADMIN-006**: One-click ZIP of all visible (optionally all) photos at stored quality, filenames = timestamp + nickname. The ZIP packs the **developed** copies by default (what the gallery shows); an **“Originals (no film look, no stamp)”** checkbox packs the untouched originals instead — the couple's archival copy, with identical filenames either way.
 - **ADMIN-007**: Release the gallery (one-way in UI; reversible in console). 
 - **ADMIN-008**: Every admin action (hide/unhide/caption/pause/resume/grant/release/export) writes an audit record.
 - **ADMIN-009**: The couple can write a short note (caption) on any photo — visible or hidden — edited in place on the photo card: ≤200 characters with a live counter, Enter saves, Escape cancels, clearing it stores an empty string. The caption and its audit record are written in one batch.
@@ -92,6 +101,7 @@ after the event.
   Only `status: 'visible'` photos ever appear. A persistent corner card carries a QR
   code for the **guest camera** link (`/e/{slug}/`) with "Scan to take photos" and
   **never a gallery PIN**. Same controls and keyboard as GALLERY-009.
+- **ADMIN-011**: The couple control the film development from the darkroom: a **“90s date stamp”** switch writes `config/event.dateStamp`, and **“Redevelop all photos”** re-applies every photo's own stock plus the current stamp setting across the whole album, paging through the album with live progress (“Redeveloping… 200 done”) and a completion toast. Originals are never touched; a failure surfaces as a toast and nothing is lost.
 
 ### Gallery
 - **GALLERY-001**: Before release, gallery URL shows a "still developing" page.
@@ -128,7 +138,7 @@ after the event.
 Loading → Welcome/name+consent → (permission prompt) → Viewfinder.
 Error/edge states: Permission denied (per-platform help + native fallback) · Camera unavailable (native fallback) · Capturing (~0.8s lockout, blackout+sound+wind-on) · Pending badge ("N sending…") · Offline badge ("will send when signal returns") · Retry badge · Leave-with-queue warning · No snaps ("film used up" end card + final upload status) · Event not started · Event ended · Paused ("camera resting") · Invalid link · Cap reached (renders as Event ended — guests never see the cap).
 
-**Admin**: Login · Grid (live, hide/unhide, inline caption editor) · Devices (grant snaps) · Controls (pause, release, ZIP, live wall) · Live wall / TV mode · confirmation modals for pause/release.
+**Admin**: Login · Grid (live, hide/unhide, inline caption editor) · Devices (grant snaps) · Controls (pause, release, ZIP + originals option, date stamp, redevelop all, live wall) · Live wall / TV mode · confirmation modals for pause/release.
 
 **Gallery**: Developing (locked) · PIN entry (+ rate-limit error) · Photo wall (+ "Your film" strip and "Photos by" chips) · Photo detail/download (+ the couple's caption) · Slideshow / TV mode (+ "Show the PIN on screen?" sheet) · Empty state.
 

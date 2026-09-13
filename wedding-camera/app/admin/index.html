@@ -68,6 +68,25 @@
           <!-- ADMIN-010: the visible photos on the venue TV, with the camera QR -->
           <button class="btn" type="button" id="live-btn" disabled>Live wall</button>
         </div>
+        <!-- ADMIN-006: the couple's archival copy — untouched originals -->
+        <div class="opt-row">
+          <label class="opt" for="zip-originals">
+            <input type="checkbox" id="zip-originals">
+            <span>Originals (no film look, no stamp)</span>
+          </label>
+        </div>
+
+        <!-- ADMIN-011: date stamp + re-develop every photo (CONTRACTS §11) -->
+        <div class="develop-row">
+          <label class="opt" for="stamp-toggle">
+            <input type="checkbox" id="stamp-toggle" disabled>
+            <span>90s date stamp</span>
+          </label>
+          <button class="btn" type="button" id="redevelop-btn"
+                  aria-describedby="redevelop-note">Redevelop all photos</button>
+          <p class="fine muted recover-note" id="redevelop-note">Re-applies each photo’s film stock and the date-stamp setting. Originals are never changed.</p>
+        </div>
+
         <!-- UPLOAD-009: manual reconciliation sweep (CONTRACTS §5 reconcileNow) -->
         <div class="recover-row">
           <button class="btn" type="button" id="reconcile-btn"

@@ -211,3 +211,91 @@ test.describe('live wall (ADMIN-010)', () => {
     await expect(page.locator('.photo-card').first()).toBeVisible();
   });
 });
+
+
+/* ── film development controls (ADMIN-011 / CONTRACTS §11) ────────── */
+
+/** `config/event.dateStamp` as Firestore actually stores it (owner read). */
+async function storedDateStamp() {
+  const doc = await firestoreGet('config/event');
+  const field = doc.fields.dateStamp;
+  return field ? field.booleanValue === true : null;
+}
+
+/** Restores the fixture out-of-band if a test leaves the switch the wrong way. */
+async function setDateStamp(value) {
+  const res = await fetch(`${FS_BASE}/config/event?updateMask.fieldPaths=dateStamp`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: { dateStamp: { booleanValue: !!value } } }),
+  });
+  if (!res.ok) throw new Error(`emulator PATCH config/event → ${res.status}`);
+}
+
+/**
+ * How many `audit{action:'redevelop'}` records exist. `redevelopAll` writes one per
+ * call with the Admin SDK — the value is deliberately NOT in the rules audit enum,
+ * so no client can forge it (CONTRACTS §2).
+ */
+async function redevelopAudits() {
+  const res = await fetch(`${FS_BASE}:runQuery`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: 'audit' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'action' }, op: 'EQUAL', value: { stringValue: 'redevelop' },
+          },
+        },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`emulator runQuery audit → ${res.status}`);
+  return (await res.json()).filter((row) => row.document).length;
+}
+
+test.describe('film development controls (ADMIN-011)', () => {
+  test('the 90s date stamp toggle writes config/event.dateStamp', async ({ page }) => {
+    await setDateStamp(true); // the fixture ships with the stamp on — start from there
+    await signInAdmin(page);
+    const box = page.locator('#stamp-toggle');
+    await expect(box).toBeEnabled({ timeout: 30_000 });
+    await expect(box).toBeChecked({ timeout: 30_000 });
+
+    try {
+      await box.uncheck();
+      await expect.poll(storedDateStamp, { timeout: 30_000 }).toBe(false);
+      await expect(page.locator('.toast').last()).toContainText('Date stamp off');
+
+      await box.check();
+      await expect.poll(storedDateStamp, { timeout: 30_000 }).toBe(true);
+      await expect(page.locator('.toast').last()).toContainText('Date stamp on');
+      await expect(box).toBeChecked();
+    } finally {
+      await setDateStamp(true);
+    }
+  });
+
+  test('“Redevelop all photos” loops to the end and logs an audit record', async ({ page }) => {
+    const before = await redevelopAudits();
+    await signInAdmin(page);
+
+    const btn = page.locator('#redevelop-btn');
+    await expect(btn).toBeEnabled();
+    await btn.click();
+
+    // The loop pages through redevelopAll until `remaining` is false, then toasts.
+    await expect(page.locator('.toast').last())
+      .toContainText('Redeveloped', { timeout: 150_000 });
+    await expect(page.locator('.toast').last()).not.toHaveClass(/bad/);
+
+    // Button returns to its resting state — no stuck "Redeveloping…" label.
+    await expect(btn).toBeEnabled({ timeout: 30_000 });
+    await expect(btn).toHaveText('Redevelop all photos');
+    await expect(page.locator('#stamp-toggle')).toBeEnabled();
+
+    await expect.poll(redevelopAudits, { timeout: 30_000 }).toBeGreaterThan(before);
+  });
+});
