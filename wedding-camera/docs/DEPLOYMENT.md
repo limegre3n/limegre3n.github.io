@@ -226,6 +226,7 @@ fields click the small **+** inside the map to add nested fields.
 | paused | boolean | `false` |
 | defaultSnaps | number | `10` |
 | galleryReleased | boolean | `false` |
+| dateStamp | boolean | `true` — burns a 90s orange date stamp onto the developed copies (toggle later from the admin page) |
 | theme | map | add the nested fields below |
 
 Inside the **theme** map add:
@@ -340,6 +341,46 @@ Console → **Build → Hosting → Add custom domain** → enter the domain →
 records shown (add them at your registrar) → wait for **Connected** (up to 24 h for the
 certificate). Then also add the domain under **Authentication → Settings → Authorized
 domains**. The `<project-id>.web.app` address keeps working regardless.
+
+## Updating a live app (pulling new features)
+
+Run these in Command Prompt inside the `wedding-camera` folder whenever new code has
+been pushed. Nothing here touches your photos or configuration.
+
+```
+git pull
+npm install
+cd functions && npm install && cd ..
+npm run build
+npx firebase deploy
+```
+
+`npx firebase deploy` publishes hosting, rules, **Firestore indexes** and functions in one
+go. If it reports an index or function error, wait two minutes and run
+`npx firebase deploy --only firestore:indexes,functions` once more.
+
+What arrived with the September 2026 update and what to check afterwards:
+
+- **Film development.** New photos get a developed copy (film look + optional date stamp)
+  a few seconds after upload; originals are untouched. The first deploy of the `sharp`
+  image library makes the functions upload take a little longer — that is normal.
+- **Date stamp switch.** Admin page → *90s date stamp*. It is on by default. After
+  changing it (or to give already-uploaded photos the film look), press **Redevelop all
+  photos** once and wait for the "done" message. Existing photos without a developed
+  copy simply show the original until then.
+- **Gallery downloads.** Guests can *Download all* (one ZIP built on the server, shared by
+  everyone) or *Select* photos. The very first *Download all* after a moderation change
+  can take up to a minute; later taps are instant.
+- **Slideshow / TV.** Gallery toolbar → *Slideshow* shows the album with a QR code and the
+  PIN in the corner (it asks before showing the PIN). Admin page → *Live wall* shows
+  visible photos as they arrive with the *camera* QR, for a screen at the venue. Cast a
+  laptop or phone browser tab to the TV; press **Esc** or *Exit* to leave.
+- **Zoom.** The camera slider now shows true lens magnifications (0.5×, 1×, 2×…). If a
+  guest's phone still labels lenses oddly, open the camera link with `?diag=1` appended
+  (e.g. `https://<project-id>.web.app/e/<slug>/?diag=1`), tap **Copy** on the sheet that
+  appears and send the text to your technical helper — it lists the phone's lenses and
+  how the app mapped them.
+- **Film dial.** Guests pick a stock under the viewfinder; the choice sticks per phone.
 
 ## Wedding day & after
 

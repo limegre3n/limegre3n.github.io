@@ -73,6 +73,16 @@ npm run test:e2e                  # Playwright browser tests (fake camera)
   get a **Download all pictures** button (only the visible photos, never hidden ones).
   Everyone shares one archive the server rebuilds at most a few times a day, so the
   first tap after a moderation change is the slow one.
+- **A note on a photo:** admin grid → *Add a note* under the photo. It shows in the
+  gallery in your voice; guests also get a **Your film** strip of their own frames.
+- **Screen at the venue:** admin → **Live wall** (visible photos as they arrive, with the
+  camera QR). After release: gallery → **Slideshow** (album with the gallery QR + PIN).
+- **Film look:** guests pick a film stock on the camera; the server develops each photo
+  with that look and a 90s date stamp (admin → *90s date stamp* to switch it off, then
+  **Redevelop all photos**). Originals are always kept; *Originals* in the export
+  options gives you the untouched files.
+- **Zoom looks wrong on someone's phone:** open their camera link with `?diag=1` added,
+  tap **Copy**, and send the text to your technical helper.
 
 ## Shutdown (≤3 months after the wedding — required)
 
