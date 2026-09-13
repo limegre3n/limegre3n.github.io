@@ -153,6 +153,21 @@
         </div>
       </div>
 
+      <!-- GALLERY-008: the frames this browser shot, when it shot any -->
+      <section class="myfilm" id="myfilm" aria-labelledby="myfilm-title" hidden>
+        <div class="myfilm-head">
+          <h2 class="myfilm-title" id="myfilm-title">Your film</h2>
+          <p class="myfilm-note" id="myfilm-note"></p>
+          <p class="myfilm-hint">Tap to open</p>
+        </div>
+        <div class="myfilm-reel">
+          <div class="myfilm-row" id="myfilm-row"></div>
+        </div>
+      </section>
+
+      <!-- GALLERY-008: "Photos by" chips filter the wall, client-side -->
+      <div class="chips" id="chips" role="group" aria-label="Photos by" hidden></div>
+
       <div class="wall" id="wall" data-layout="grid"></div>
 
       <div class="empty" id="wall-empty" hidden>
@@ -226,6 +241,8 @@
 
       <div class="lb-bottom">
         <div class="lb-meta">
+          <!-- GALLERY-007: the couple's note, in their voice, above the byline -->
+          <p class="lb-caption" id="lightbox-caption" hidden></p>
           <p class="lb-by" id="lightbox-by"></p>
           <p class="lb-when" id="lightbox-when"></p>
         </div>

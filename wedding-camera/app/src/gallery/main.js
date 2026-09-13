@@ -1,6 +1,6 @@
 /**
  * Gallery app — workstream ④.
- * Implements PRD GALLERY-001..006 against docs/CONTRACTS.md §2, §4 (gallery claim), §5.
+ * Implements PRD GALLERY-001..008 against docs/CONTRACTS.md §2, §4 (gallery claim), §5.
  *
  * Hard rules honoured here:
  *  - all rendered text via textContent (never innerHTML) — XSS guard, CONTRACTS §9
@@ -117,6 +117,8 @@ function refreshInkTokens() {
     root.style.setProperty('--accent-strong', css(ensureContrast(accent, PAPER_RGB, 4.5)));
     root.style.setProperty('--accent-lift', css(ensureContrast(accent, COVER_RGB, 4.5)));
     root.style.setProperty('--accent-fade', `rgba(${accent[0]}, ${accent[1]}, ${accent[2]}, 0.3)`);
+    // A whisper of the accent, for surfaces that must stay paper (the Your-film card).
+    root.style.setProperty('--accent-wash', `rgba(${accent[0]}, ${accent[1]}, ${accent[2]}, 0.09)`);
     // Cover plate: always a deep tint of the accent, so white cover type stays AA.
     root.style.setProperty('--cover-a', css(mix(accent, [0x26, 0x20, 0x1b], 0.7)));
     root.style.setProperty('--cover-b', css(mix(accent, [0x0b, 0x0a, 0x09], 0.93)));
@@ -164,6 +166,25 @@ function byLine(data) {
   return data && data.nickname ? `by ${data.nickname}` : 'by a guest';
 }
 
+/* ── the couple's note (GALLERY-007) ──────────────────────────────── */
+/** The stored caption, trimmed — '' (and an absent field) mean "no note". */
+function captionOf(data) {
+  return data && typeof data.caption === 'string' ? data.caption.trim() : '';
+}
+
+/** Spoken description of a frame: byline first, then the couple's note. */
+function frameLabel(data) {
+  const caption = captionOf(data);
+  return caption ? `Photo ${byLine(data)}. The couple wrote: ${caption}` : `Photo ${byLine(data)}`;
+}
+
+/* ── "Photos by" grouping (GALLERY-008) ───────────────────────────── */
+const UNKNOWN_NICK_LABEL = 'A guest';
+
+function nickOf(data) {
+  return data && data.nickname ? String(data.nickname) : '';
+}
+
 /* ── auth (CONTRACTS §4: anonymous auth for gallery viewers) ──────── */
 function ensureUser() {
   return new Promise((resolve, reject) => {
@@ -195,12 +216,23 @@ async function hasGalleryClaim(forceRefresh = false) {
 let config = null;
 let unlocked = false;
 let wallUnsub = null;
-let photos = [];
+let photos = [];              // every visible frame in the album (live)
+let shown = [];               // the frames the wall is showing (chip filter applied)
 const urlCache = new Map();   // storagePath → Promise<string>
-const shots = new Map();      // uuid → { root, img, frame, meta, requested }
+const shots = new Map();      // uuid → { root, img, frame, meta, quote, requested }
 let observer = null;
 let themeHeroDone = false;
 let wallHeroPath = null;
+
+/* GALLERY-008 — "Your film" strip + the "Photos by" chip filter. Both are
+ * derived views: nothing about them is persisted between visits. */
+let myPhotos = [];
+let myFilmUnsub = null;
+const filmTiles = new Map();  // uuid → tile, kept apart from the wall's `shots`
+let filmObserver = null;
+let filterNick = null;        // null = All
+let chipSig = '';
+let chipButtons = [];
 
 /* GALLERY-006 — selection lives only for as long as the tab is open. */
 const selected = new Set();   // uuid
@@ -285,13 +317,13 @@ function ensureObserver() {
   }, { rootMargin: '400px 0px' });
 }
 
-function failShot(shot) {
-  shot.frame.classList.remove('is-loaded');
-  shot.frame.classList.add('is-failed');
-  if (!shot.fallback) {
+function failTile(tile) {
+  tile.frame.classList.remove('is-loaded');
+  tile.frame.classList.add('is-failed');
+  if (!tile.fallback) {
     const tpl = $('tpl-shot-fallback');
-    shot.fallback = tpl.content.firstElementChild.cloneNode(true);
-    shot.frame.appendChild(shot.fallback);
+    tile.fallback = tpl.content.firstElementChild.cloneNode(true);
+    tile.frame.appendChild(tile.fallback);
   }
 }
 
@@ -299,29 +331,34 @@ function failShot(shot) {
  *  and still swaps in the photo if the request lands later. */
 const SLOW_MS = 20_000;
 
-function loadShot(uuid) {
-  const shot = shots.get(uuid);
-  const data = photos.find((p) => p.uuid === uuid);
-  if (!shot || !data || shot.requested || !data.storagePath) return;
-  shot.requested = true;
-  const slow = setTimeout(() => failShot(shot), SLOW_MS);
+/** Shared by the wall and the "Your film" strip — both go through `photoUrl`,
+ *  so a frame in both places is fetched once and its URL reused (GALLERY-008). */
+function loadTile(tile, data) {
+  if (!tile || !data || tile.requested || !data.storagePath) return;
+  tile.requested = true;
+  const slow = setTimeout(() => failTile(tile), SLOW_MS);
   photoUrl(data.storagePath).then((url) => {
-    shot.img.addEventListener('load', () => {
+    tile.img.addEventListener('load', () => {
       clearTimeout(slow);
-      shot.frame.classList.remove('is-failed');
-      shot.frame.classList.add('is-loaded');
+      tile.frame.classList.remove('is-failed');
+      tile.frame.classList.add('is-loaded');
     }, { once: true });
-    shot.img.addEventListener('error', () => { clearTimeout(slow); failShot(shot); }, { once: true });
-    shot.img.src = url;
+    tile.img.addEventListener('error', () => { clearTimeout(slow); failTile(tile); }, { once: true });
+    tile.img.src = url;
   }).catch((error) => {
-    console.error('photo failed to load', uuid, error);
+    console.error('photo failed to load', data.uuid, error);
     clearTimeout(slow);
-    failShot(shot); // a soft icon, never a raw error label
+    failTile(tile); // a soft icon, never a raw error label
   });
 }
 
-function buildShot(uuid) {
-  const root = el('button', 'shot');
+function loadShot(uuid) {
+  loadTile(shots.get(uuid), photos.find((p) => p.uuid === uuid));
+}
+
+/** The shared chassis of a tile: shimmer frame, image, quote badge. */
+function buildTileFrame(uuid, className) {
+  const root = el('button', className);
   root.type = 'button';
   root.dataset.uuid = uuid;
 
@@ -332,17 +369,28 @@ function buildShot(uuid) {
   img.decoding = 'async';
   frame.appendChild(img);
 
-  // GALLERY-006: the badge ships with every tile but only paints in select mode.
-  frame.appendChild($('tpl-shot-check').content.firstElementChild.cloneNode(true));
+  // GALLERY-007: captioned frames wear a quiet quote mark so notes are findable.
+  const quote = el('span', 'shot-quote', '“');
+  quote.setAttribute('aria-hidden', 'true');
+  quote.hidden = true;
+  frame.appendChild(quote);
 
-  const meta = el('span', 'shot-meta');
-  root.append(frame, meta);
-  root.addEventListener('click', () => {
+  return { root, frame, img, quote, requested: false, fallback: null };
+}
+
+function buildShot(uuid) {
+  const shot = buildTileFrame(uuid, 'shot');
+
+  // GALLERY-006: the badge ships with every tile but only paints in select mode.
+  shot.frame.appendChild($('tpl-shot-check').content.firstElementChild.cloneNode(true));
+
+  shot.meta = el('span', 'shot-meta');
+  shot.root.append(shot.frame, shot.meta);
+  shot.root.addEventListener('click', () => {
     if (selecting) toggleSelection(uuid);
     else openDetail(uuid);
   });
 
-  const shot = { root, img, frame, meta, requested: false, fallback: null };
   shots.set(uuid, shot);
   return shot;
 }
@@ -351,19 +399,25 @@ function renderWall() {
   const wall = $('wall');
   ensureObserver();
 
-  const count = photos.length;
-  $('wall-empty').hidden = count > 0;
-  $('wall-count').textContent = count ? photoCountLabel(count) : '';
-  $('toolbar-count').textContent = count ? photoCountLabel(count) : 'No photos yet';
-  $('wall-count').hidden = count === 0;
+  // GALLERY-008: a chip only ever exists for a name that has frames, but a live
+  // hide can empty the current one — fall back to All rather than show nothing.
+  shown = filterNick === null ? photos : photos.filter((p) => nickOf(p) === filterNick);
+  if (filterNick !== null && shown.length === 0) { filterNick = null; shown = photos; }
+
+  const total = photos.length;
+  $('wall-empty').hidden = total > 0;
+  $('wall-count').textContent = total ? photoCountLabel(total) : '';
+  $('wall-count').hidden = total === 0;
+  $('toolbar-count').textContent = shown.length ? photoCountLabel(shown.length) : 'No photos yet';
 
   const seen = new Set();
-  for (const data of photos) {
+  for (const data of shown) {
     seen.add(data.uuid);
     const shot = shots.get(data.uuid) || buildShot(data.uuid);
     const by = byLine(data);
     const when = fmtWhen(data.capturedAt || data.receivedAt);
     shot.meta.textContent = when ? `${by} · ${when}` : by;
+    shot.quote.hidden = !captionOf(data);
     syncShotSemantics(shot, data);
     if (data.width > 0 && data.height > 0) {
       shot.root.style.setProperty('--ar', `${data.width} / ${data.height}`);
@@ -377,11 +431,151 @@ function renderWall() {
   }
   // A moderator hiding a frame mid-session must not leave it in the selection.
   for (const uuid of selected) if (!seen.has(uuid)) selected.delete(uuid);
+  renderChips();
   syncToolbarActions();
   renderSelection();
 
   applyWallHero();
   if (!$('lightbox').hidden) syncDetail();
+}
+
+/* ── "Photos by" chips (GALLERY-008) ──────────────────────────────── */
+/** Distinct nicknames in the album, most frames first, then alphabetical. */
+function nickCounts() {
+  const counts = new Map();
+  for (const data of photos) {
+    const nick = nickOf(data);
+    counts.set(nick, (counts.get(nick) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function buildChip(nick, label, count) {
+  const btn = el('button', 'chip');
+  btn.type = 'button';
+  btn.append(el('span', 'chip-name', label), el('span', 'chip-count', String(count)));
+  btn.setAttribute('aria-label', nick === null
+    ? `All photos, ${photoCountLabel(count)}`
+    : `Photos by ${label}, ${photoCountLabel(count)}`);
+  btn.addEventListener('click', () => selectNick(nick));
+  chipButtons.push({ btn, nick });
+  return btn;
+}
+
+function syncChipPressed() {
+  for (const { btn, nick } of chipButtons) btn.setAttribute('aria-pressed', String(nick === filterNick));
+}
+
+function renderChips() {
+  const row = $('chips');
+  const entries = nickCounts();
+  const sig = entries.map(([nick, count]) => `${nick}\u0000${count}`).join('|');
+  if (sig !== chipSig) {
+    chipSig = sig;
+    chipButtons = [];
+    row.textContent = '';
+    row.appendChild(buildChip(null, 'All', photos.length));
+    for (const [nick, count] of entries) {
+      row.appendChild(buildChip(nick, nick || UNKNOWN_NICK_LABEL, count));
+    }
+  }
+  // One name means nothing to choose between; ≥30 names still render (scrollable).
+  row.hidden = entries.length < 2;
+  syncChipPressed();
+}
+
+function selectNick(nick) {
+  if (filterNick === nick) return;
+  filterNick = nick;
+  renderWall(); // select mode deliberately survives: it applies to what is shown
+}
+
+/* ── "Your film" strip (GALLERY-008) ──────────────────────────────── */
+function ensureFilmObserver() {
+  if (filmObserver || typeof IntersectionObserver !== 'function') return;
+  filmObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      filmObserver.unobserve(entry.target);
+      loadTile(filmTiles.get(entry.target.dataset.uuid),
+        myPhotos.find((p) => p.uuid === entry.target.dataset.uuid));
+    }
+  }, { root: null, rootMargin: '200px' });
+}
+
+function buildFilmTile(uuid) {
+  const tile = buildTileFrame(uuid, 'filmshot');
+  tile.root.appendChild(tile.frame);
+  tile.root.addEventListener('click', () => openFromFilm(uuid));
+  filmTiles.set(uuid, tile);
+  return tile;
+}
+
+/** The viewer's own frame may be filtered out of the wall — show it anyway. */
+function openFromFilm(uuid) {
+  if (!shown.some((p) => p.uuid === uuid)) selectNick(null);
+  openDetail(uuid);
+}
+
+function renderMyFilm() {
+  const section = $('myfilm');
+  const row = $('myfilm-row');
+  if (myPhotos.length === 0) {
+    section.hidden = true; // no empty state — a viewer who shot nothing sees nothing
+    row.textContent = '';
+    filmTiles.clear();
+    return;
+  }
+  ensureFilmObserver();
+  $('myfilm-note').textContent = `${myPhotos.length} frame${myPhotos.length === 1 ? '' : 's'} you took`;
+
+  const seen = new Set();
+  for (const data of myPhotos) {
+    seen.add(data.uuid);
+    const tile = filmTiles.get(data.uuid) || buildFilmTile(data.uuid);
+    tile.quote.hidden = !captionOf(data);
+    tile.root.setAttribute('aria-label', `${frameLabel(data)}. Opens full screen.`);
+    row.appendChild(tile.root);
+    if (filmObserver) filmObserver.observe(tile.root);
+    else loadTile(tile, data);
+  }
+  for (const [uuid, tile] of filmTiles) {
+    if (!seen.has(uuid)) { tile.root.remove(); filmTiles.delete(uuid); }
+  }
+  section.hidden = false;
+}
+
+function startMyFilm() {
+  if (myFilmUnsub) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  // GALLERY-008: this browser's own frames. The guest camera and the gallery
+  // share an origin, so they share the anonymous uid (CONTRACTS §4).
+  // Composite index: photos(deviceUid ASC, status ASC, receivedAt ASC).
+  const q = query(
+    collection(db, 'photos'),
+    where('deviceUid', '==', user.uid),
+    where('status', '==', 'visible'),
+    orderBy('receivedAt', 'asc'),
+  );
+  myFilmUnsub = onSnapshot(q, (snap) => {
+    myPhotos = snap.docs.map((d) => ({ uuid: d.id, ...d.data() }));
+    renderMyFilm();
+  }, (error) => {
+    // The strip is a bonus: never let it interrupt the album with an error.
+    console.warn('your-film feed unavailable', error);
+    myPhotos = [];
+    renderMyFilm();
+  });
+}
+
+function stopMyFilm() {
+  if (myFilmUnsub) { myFilmUnsub(); myFilmUnsub = null; }
+  myPhotos = [];
+  filmTiles.clear();
+  if (filmObserver) { filmObserver.disconnect(); filmObserver = null; }
+  $('myfilm-row').textContent = '';
+  $('myfilm').hidden = true;
 }
 
 function startWall() {
@@ -400,15 +594,23 @@ function startWall() {
     console.error('photo feed failed', error);
     toast('Could not load the photos. Pull to refresh and try again.', 'bad');
   });
+  startMyFilm();
 }
 
 function stopWall() {
   if (wallUnsub) { wallUnsub(); wallUnsub = null; }
+  stopMyFilm();
   setSelectMode(false, false);
   hideReady();
   photos = [];
+  shown = [];
   shots.clear();
   wallHeroPath = null;
+  filterNick = null;
+  chipSig = '';
+  chipButtons = [];
+  $('chips').textContent = '';
+  $('chips').hidden = true;
   if (observer) { observer.disconnect(); observer = null; }
   $('wall').textContent = '';
 }
@@ -436,22 +638,26 @@ let lastFocused = null;
 const lightbox = () => $('lightbox');
 
 function detailIndex() {
-  return photos.findIndex((p) => p.uuid === detailUuid);
+  return shown.findIndex((p) => p.uuid === detailUuid);
 }
 
 /** Refreshes caption, counter and nav for the current frame (live feed safe). */
 function syncDetail() {
   const index = detailIndex();
   if (index < 0) { closeDetail(); return; }
-  const data = photos[index];
+  const data = shown[index];
   const by = byLine(data);
   const when = fmtWhen(data.capturedAt || data.receivedAt);
+  const caption = captionOf(data); // GALLERY-007
+  $('lightbox-caption').textContent = caption;
+  $('lightbox-caption').hidden = caption === '';
   $('lightbox-by').textContent = by;
   $('lightbox-when').textContent = when;
-  $('lightbox-counter').textContent = `${index + 1} / ${photos.length}`;
+  $('lightbox-counter').textContent = `${index + 1} / ${shown.length}`;
   $('lb-prev').disabled = index <= 0;
-  $('lb-next').disabled = index >= photos.length - 1;
-  $('lightbox-img').alt = `Photo ${by}`;
+  $('lb-next').disabled = index >= shown.length - 1;
+  $('lightbox-img').alt = frameLabel(data);
+  $('lb-dialog').setAttribute('aria-label', frameLabel(data));
 }
 
 let detailSlow = null;
@@ -463,7 +669,7 @@ function detailFailed(message) {
 }
 
 function showFrame(uuid) {
-  const data = photos.find((p) => p.uuid === uuid);
+  const data = shown.find((p) => p.uuid === uuid);
   if (!data) return;
   detailUuid = uuid;
   const img = $('lightbox-img');
@@ -504,12 +710,12 @@ function showFrame(uuid) {
 function step(delta) {
   const index = detailIndex();
   const next = index + delta;
-  if (index < 0 || next < 0 || next >= photos.length) return;
-  showFrame(photos[next].uuid);
+  if (index < 0 || next < 0 || next >= shown.length) return;
+  showFrame(shown[next].uuid);
 }
 
 function openDetail(uuid) {
-  if (!photos.some((p) => p.uuid === uuid)) return;
+  if (!shown.some((p) => p.uuid === uuid)) return;
   lastFocused = document.activeElement;
   lightbox().hidden = false;
   document.body.classList.add('is-locked');
@@ -570,7 +776,7 @@ $('lb-stage').addEventListener('touchend', (e) => {
 }, { passive: true });
 
 $('lightbox-download').addEventListener('click', async () => {
-  const data = photos.find((p) => p.uuid === detailUuid);
+  const data = shown.find((p) => p.uuid === detailUuid);
   if (!data) return;
   const btn = $('lightbox-download');
   const label = $('download-label');
@@ -752,26 +958,27 @@ const OVER_CAP_MSG = 'For more than 60 photos, use Download all';
 const ZIP_FETCH_CONCURRENCY = 4;
 
 function syncToolbarActions() {
+  // GALLERY-005 always means the WHOLE album; Select works on what is shown.
   $('download-all').disabled = packing || photos.length === 0;
-  $('select-toggle').disabled = packing || photos.length === 0;
+  $('select-toggle').disabled = packing || shown.length === 0;
 }
 
 /** In select mode a tile is a checkbox, not a link into the lightbox. */
 function syncShotSemantics(shot, data) {
-  const by = byLine(data);
+  const label = frameLabel(data); // GALLERY-007: the note is part of the description
   if (selecting) {
     shot.root.setAttribute('role', 'checkbox');
     shot.root.setAttribute('aria-checked', String(selected.has(data.uuid)));
-    shot.root.setAttribute('aria-label', `Photo ${by}. Select this photo.`);
+    shot.root.setAttribute('aria-label', `${label}. Select this photo.`);
   } else {
     shot.root.removeAttribute('role');
     shot.root.removeAttribute('aria-checked');
-    shot.root.setAttribute('aria-label', `Photo ${by}. Opens full screen.`);
+    shot.root.setAttribute('aria-label', `${label}. Opens full screen.`);
   }
 }
 
 function refreshShotSemantics() {
-  for (const data of photos) {
+  for (const data of shown) {
     const shot = shots.get(data.uuid);
     if (shot) syncShotSemantics(shot, data);
   }
@@ -784,10 +991,10 @@ function setSelectionStatus(text) {
 function renderSelection() {
   const n = selected.size;
   const over = n > MAX_SELECTION_ZIP;
-  const all = photos.length > 0 && n >= photos.length;
+  const all = shown.length > 0 && n >= shown.length;
   if (!selectionBusy) setSelectionStatus(`${n} selected`);
   $('sel-all').textContent = all ? 'Clear' : 'Select all';
-  $('sel-all').disabled = selectionBusy || photos.length === 0;
+  $('sel-all').disabled = selectionBusy || shown.length === 0;
   $('sel-cancel').disabled = selectionBusy;
   $('sel-download').disabled = selectionBusy || n === 0 || over;
 }
@@ -816,7 +1023,7 @@ function toggleSelection(uuid) {
   if (selected.has(uuid)) selected.delete(uuid);
   else selected.add(uuid);
   const shot = shots.get(uuid);
-  const data = photos.find((p) => p.uuid === uuid);
+  const data = shown.find((p) => p.uuid === uuid);
   if (shot && data) syncShotSemantics(shot, data);
   if (selected.size === MAX_SELECTION_ZIP + 1) toast(OVER_CAP_MSG);
   renderSelection();
@@ -827,10 +1034,10 @@ $('sel-cancel').addEventListener('click', () => setSelectMode(false));
 
 $('sel-all').addEventListener('click', () => {
   if (selectionBusy) return;
-  const all = photos.length > 0 && selected.size >= photos.length;
+  const all = shown.length > 0 && selected.size >= shown.length;
   selected.clear();
   if (!all) {
-    for (const data of photos) selected.add(data.uuid);
+    for (const data of shown) selected.add(data.uuid);
     if (selected.size > MAX_SELECTION_ZIP) toast(OVER_CAP_MSG);
   }
   refreshShotSemantics();
@@ -886,7 +1093,7 @@ function zipEntries(entries) {
 }
 
 async function downloadSelection() {
-  const picks = photos.filter((data) => selected.has(data.uuid));
+  const picks = shown.filter((data) => selected.has(data.uuid));
   if (!picks.length || picks.length > MAX_SELECTION_ZIP || selectionBusy) return;
   selectionBusy = true;
   hideReady();

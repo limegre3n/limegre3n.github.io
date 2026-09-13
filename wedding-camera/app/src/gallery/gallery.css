@@ -21,6 +21,7 @@
   --accent-strong: #8a6413;  /* accent nudged until AA on paper */
   --accent-lift: #f0c169;    /* accent nudged until AA on the cover plate */
   --accent-fade: rgba(232, 176, 75, 0.3);
+  --accent-wash: rgba(232, 176, 75, 0.09);
   --cover-a: #3a3128;
   --cover-b: #0e0c0b;
 
@@ -313,6 +314,103 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   animation: spin 0.9s linear infinite;
 }
 
+/* ── "Your film" strip (GALLERY-008) ─────────────────────────────── */
+/* The emotional centre of the album for the guest who shot it, so it gets a
+   surface of its own: a soft warm card, and inside it a reel that borrows the
+   cover plate (--cover-a/--cover-b, both derived from the couple's accent) with
+   a punched sprocket band top and bottom. Every texture is a gradient — no
+   images, no webfonts. Rendered only when this browser actually shot a frame,
+   so it can never become an empty shelf. Tiles share .shot-frame with the wall:
+   same shimmer, same object-fit crop, same cached signed URL. */
+.myfilm {
+  margin: 0.85rem 0.85rem 0.25rem;
+  padding: 0.85rem 0.7rem 0.7rem;
+  background: linear-gradient(180deg, var(--accent-wash), transparent 62%), var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+.myfilm-head {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.1rem 0.55rem;
+  padding: 0 0.2rem 0.65rem;
+}
+/* Same display treatment as the cover names, in whichever face the couple chose. */
+.myfilm-title {
+  font-family: var(--font-stack);
+  font-size: 1.16rem; font-weight: 600; letter-spacing: -0.015em; line-height: 1.15;
+}
+.myfilm-note {
+  font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+.myfilm-hint {
+  margin-left: auto;
+  font-size: 0.74rem; color: var(--ink-3); white-space: nowrap;
+}
+
+.myfilm-reel {
+  position: relative; isolation: isolate;
+  border-radius: var(--r-md); overflow: hidden;
+  background: linear-gradient(160deg, var(--cover-a) 0%, var(--cover-b) 100%);
+  padding: 13px 0;
+}
+/* the two film edges: light punches let the plate read as perforated stock */
+.myfilm-reel::before, .myfilm-reel::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 13px;
+  z-index: 1; pointer-events: none;
+  background-image: radial-gradient(circle at 50% 50%,
+    rgba(255, 255, 255, 0.34) 0 2.3px, transparent 2.5px);
+  background-size: 15px 13px; background-repeat: repeat-x;
+}
+.myfilm-reel::before { top: 0; }
+.myfilm-reel::after { bottom: 0; }
+
+/* Snap-scrolls, and the next frame is deliberately left half-cut at the right
+   edge so the reel reads as something you can push along. */
+.myfilm-row {
+  display: flex; gap: 12px;
+  overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 0 12px;
+  scroll-snap-type: x mandatory; scroll-padding-left: 12px;
+  scrollbar-width: none;
+}
+.myfilm-row::-webkit-scrollbar { height: 0; }
+.filmshot {
+  flex: 0 0 auto; width: 132px; padding: 0; border: 0;
+  background: transparent; cursor: pointer; scroll-snap-align: start;
+}
+.filmshot:focus-visible { outline: 2px solid var(--accent-lift); outline-offset: 2px; }
+.filmshot .shot-frame {
+  aspect-ratio: 4 / 5;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.filmshot .shot-quote { top: 3px; left: 9px; font-size: 26px; }
+@media (min-width: 560px) {
+  .filmshot { width: 148px; }
+}
+
+/* ── "Photos by" chips (GALLERY-008) ─────────────────────────────── */
+.chips {
+  display: flex; gap: 0.4rem;
+  overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { height: 0; }
+.chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  min-height: 36px; padding: 0.3rem 0.75rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink-2);
+  font-size: 0.82rem; font-weight: 600; white-space: nowrap; cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: transparent; }
+.chip-count { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.6; }
+
 /* ── the wall ────────────────────────────────────────────────────── */
 .wall { display: grid; }
 .wall[data-layout="grid"] { grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; }
@@ -398,6 +496,17 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
 .wall[data-selecting="true"] .shot[aria-checked="true"] .shot-check {
   background: var(--accent-fill); color: var(--on-accent); transform: scale(1.06);
 }
+
+/* ── a captioned frame (GALLERY-007) ─────────────────────────────── */
+/* Unobtrusive on the wall — just enough for a guest to notice there is a note. */
+.shot-quote {
+  position: absolute; top: 1px; left: 6px; z-index: 2; pointer-events: none;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px; line-height: 1.05;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+}
+.wall[data-layout="roll"] .shot-quote { top: 4px; left: 12px; font-size: 30px; }
 
 /* ── bottom dock: ZIP-ready banner + selection bar ───────────────── */
 .dock {
@@ -515,7 +624,19 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   font-size: 0.78rem; letter-spacing: 0.14em; font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.82);
 }
-.lb-meta { min-width: 0; }
+.lb-meta { flex: 1 1 auto; min-width: 0; }
+/* GALLERY-007 — the couple's voice: quiet, italic, marked by an accent rule. */
+.lb-caption {
+  position: relative;
+  max-width: 34rem; margin-bottom: 0.35rem; padding-left: 0.7rem;
+  font-size: 0.95rem; font-style: italic; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.93);
+  overflow-wrap: anywhere;
+}
+.lb-caption::before {
+  content: ''; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
+  width: 2px; border-radius: 2px; background: var(--accent-fill);
+}
 .lb-by { font-size: 0.95rem; font-weight: 600; color: #fff; overflow-wrap: anywhere; }
 .lb-when { font-size: 0.76rem; letter-spacing: 0.06em; color: rgba(255, 255, 255, 0.62); }
 

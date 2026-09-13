@@ -22,7 +22,8 @@ describe('audit', () => {
   test('admin may create a record naming itself as actor', async () => {
     const me = adminUid();
     const db = asAdminWith(me);
-    for (const action of ['hide', 'unhide', 'rotate', 'pause', 'resume', 'grant', 'release', 'export']) {
+    for (const action of ['hide', 'unhide', 'rotate', 'caption', 'pause', 'resume',
+      'grant', 'release', 'export']) {
       await assertSucceeds(addDoc(collection(db, 'audit'),
         { action, target: uuid(), actorUid: me, at: serverTimestamp() }));
     }
@@ -31,6 +32,19 @@ describe('audit', () => {
       { action: 'pause', target: null, actorUid: me, at: serverTimestamp() }));
     await assertSucceeds(addDoc(collection(db, 'audit'),
       { action: 'release', actorUid: me, at: serverTimestamp() }));
+  });
+
+  // GALLERY-007: captioning is a moderation action, so it is audited like hide/rotate.
+  test("'caption' is an auditable admin action, still admin-only", async () => {
+    const me = adminUid();
+    await assertSucceeds(addDoc(collection(asAdminWith(me), 'audit'),
+      { action: 'caption', target: uuid(), actorUid: me, at: serverTimestamp() }));
+    const g = uid('g');
+    await assertFails(addDoc(collection(asGuest(g), 'audit'),
+      { action: 'caption', target: uuid(), actorUid: g, at: serverTimestamp() }));
+    const v = uid('v');
+    await assertFails(addDoc(collection(asGallery(), 'audit'),
+      { action: 'caption', target: uuid(), actorUid: v, at: serverTimestamp() }));
   });
 
   test('guests and gallery viewers cannot write audit records', async () => {

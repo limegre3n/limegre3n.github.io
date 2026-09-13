@@ -159,18 +159,24 @@ button { font: inherit; color: inherit; }
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 0.55rem;
 }
-.frame {
+.photo-card {
   position: relative;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--paper-2);
-  padding: 0;
   overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.frame {
+  position: relative;
+  border: 0;
+  background: transparent;
+  padding: 0;
   text-align: left;
   cursor: pointer;
   display: flex; flex-direction: column;
 }
-.frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.frame:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .frame-thumb {
   aspect-ratio: 1 / 1; width: 100%;
   background: #0d0c0b center/cover no-repeat;
@@ -189,8 +195,61 @@ button { font: inherit; color: inherit; }
   padding: 0.15rem 0.4rem; border-radius: 4px;
 }
 .frame.hidden-photo .frame-thumb { opacity: 0.28; }
-.frame.hidden-photo { border-style: dashed; }
+.photo-card.hidden-photo { border-style: dashed; }
 .frame.busy { opacity: 0.6; pointer-events: none; }
+
+/* ── the couple's note on a frame (ADMIN-009 / GALLERY-007) ─────── */
+/* The row sits outside the hide/unhide button, so a hidden frame can still be
+   captioned and a tap on the note never toggles the photo. */
+.caption-row {
+  border-top: 1px dashed var(--line);
+  padding: 0.35rem 0.5rem 0.45rem;
+  display: grid; gap: 0.25rem;
+}
+.caption-view {
+  width: 100%; min-height: 32px;
+  padding: 0.2rem 0.1rem;
+  border: 0; border-radius: 6px; background: transparent;
+  text-align: left; font-size: 0.82rem; line-height: 1.35;
+  cursor: pointer; overflow-wrap: anywhere;
+}
+.caption-view.is-empty .caption-text { color: var(--ink-2); font-style: italic; }
+.caption-view:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.caption-tick {
+  font-family: var(--mono); font-size: 0.64rem;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ok);
+}
+.caption-edit { display: grid; gap: 0.35rem; }
+.caption-input {
+  font: inherit; font-size: 0.88rem; line-height: 1.35;
+  width: 100%; resize: none;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper); color: var(--ink);
+}
+.caption-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.caption-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.caption-counter {
+  margin-right: auto;
+  font-family: var(--mono); font-size: 0.66rem;
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.caption-counter.is-full { color: var(--danger); }
+.caption-foot .btn { min-height: 34px; padding: 0.2rem 0.55rem; font-size: 0.78rem; }
+/* A 200-character note deserves the full width of a phone screen: the card
+   being edited spans the grid and lays the thumbnail beside the editor. */
+.photo-card.is-editing {
+  grid-column: 1 / -1;
+  flex-direction: row; align-items: stretch;
+}
+.photo-card.is-editing .frame { flex: 0 0 38%; max-width: 150px; }
+.photo-card.is-editing .caption-row {
+  flex: 1 1 auto; min-width: 0;
+  border-top: 0; border-left: 1px dashed var(--line);
+  align-content: start;
+  padding: 0.5rem 0.6rem;
+}
+.photo-card.is-editing .caption-input { min-height: 4.6rem; }
 
 /* ── guests (ADMIN-005) ────────────────────────────────────────── */
 .device-list { margin-top: 0.6rem; display: grid; gap: 0.5rem; }

@@ -99,9 +99,32 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 { deviceUid: string, nickname: string /*denormalized*/, storagePath: string,
   byteSize: number, width: number, height: number,
   capturedAt: Timestamp /*client-claimed*/, receivedAt: Timestamp /*server*/,
-  status: 'visible'|'hidden', rotation: 0|90|180|270 }
+  status: 'visible'|'hidden', rotation: 0|90|180|270,
+  caption?: string /*0..200 chars, GALLERY-007*/ }
 ```
-- Admin may update `status` and `rotation` only.
+- Admin may update `status`, `rotation` and `caption` only.
+- `caption` is **optional**: the finalize function never writes it, so most docs simply
+  lack the key. Absent and `''` both mean "no caption" — readers must treat them the
+  same, and the admin client may clear one either way (`''` or a field delete).
+  Validated only when the write carries it: `is string` and `size() <= 200`.
+- Captions ride along in the photo doc, so gallery viewers get them through the existing
+  read rule (gallery claim + released + `status == 'visible'`) — no separate rule.
+
+#### "Your film" query (GALLERY-008)
+A released gallery viewer lists the photos taken on their own device:
+```js
+query(collection(db, 'photos'),
+      where('deviceUid', '==', auth.currentUser.uid),
+      where('status', '==', 'visible'),
+      orderBy('receivedAt', 'asc'))
+```
+- Requires the composite index in `firestore.indexes.json`: collection `photos`,
+  `deviceUid ASC, status ASC, receivedAt ASC`.
+- The `status == 'visible'` filter is **not optional**: the read rule is
+  `resource.data.status == 'visible'`, so a query without it is rejected wholesale by
+  the rules engine (it cannot be proven safe), not silently narrowed.
+- The rule does not itself constrain `deviceUid` — a viewer is already allowed every
+  visible photo. The filter is what makes the view "yours", not an access control.
 
 ### `results/{uuid}` — upload outcome, created ONLY by finalize function
 ```js
@@ -120,7 +143,7 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
 
 ### `audit/{autoId}` — admin actions (ADMIN-008)
 ```js
-{ action: 'hide'|'unhide'|'rotate'|'pause'|'resume'|'grant'|'release'|'export',
+{ action: 'hide'|'unhide'|'rotate'|'caption'|'pause'|'resume'|'grant'|'release'|'export',
   target: string|null /*photo uuid or device uid*/, actorUid: string, at: Timestamp }
 ```
 - Create: admin only. No update/delete.
@@ -235,8 +258,9 @@ reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) 
 - ZIP building (entry names, missing-object skipping) is shared with `exportZip` via
   `buildZipFromPhotos(photoDocs, exportId)`.
 
-Admin actions hide/unhide/rotate/pause/resume/grant/release are **direct Firestore writes**
-(rules-gated to admin claim) + an `audit` doc written by the admin client in a batch.
+Admin actions hide/unhide/rotate/caption/pause/resume/grant/release are **direct Firestore
+writes** (rules-gated to admin claim) + an `audit` doc written by the admin client in a batch.
+Caption = set/clear `photos/{uuid}.caption` (≤200 chars) + `audit{action:'caption', target:uuid}`.
 Grant = `snapsRemaining += N`, `snapsGranted += N` — allowed for admin via rules.
 
 ## 6. Client upload protocol (workstream ②)

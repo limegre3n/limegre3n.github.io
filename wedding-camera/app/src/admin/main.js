@@ -1,6 +1,6 @@
 /**
  * Admin app — workstream ④.
- * Implements PRD ADMIN-001..008 against docs/CONTRACTS.md §2 (shapes), §4 (claims), §5.
+ * Implements PRD ADMIN-001..009 against docs/CONTRACTS.md §2 (shapes), §4 (claims), §5.
  *
  * Hard rules honoured here:
  *  - all rendered text via textContent (never innerHTML) — XSS guard, CONTRACTS §9
@@ -18,6 +18,11 @@ import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
 
 const GRANT_SNAPS = 10;
+
+/* ADMIN-009 / GALLERY-007 — the couple's note on a frame. The rules cap the
+ * stored string at 200 chars; an empty string means "no caption". */
+const CAPTION_MAX = 200;
+const ADD_NOTE_LABEL = 'Add a note';
 
 const app = document.getElementById('app');
 const views = new Map(
@@ -324,7 +329,7 @@ $('zip-btn').addEventListener('click', async () => {
 
 /* ── photo grid (ADMIN-002 / ADMIN-003) ───────────────────────────── */
 const thumbUrls = new Map();   // storagePath → Promise<string>
-const frames = new Map();      // uuid → { root, img, thumb, nick, time, badge }
+const frames = new Map();      // uuid → { card, root, img, thumb, nick, time, badge, caption… }
 let photoDocs = [];
 
 function thumbUrl(path) {
@@ -369,7 +374,59 @@ function loadThumb(uuid) {
   });
 }
 
+/**
+ * ADMIN-009 — the caption row lives OUTSIDE the hide/unhide button so a hidden
+ * frame can still be captioned and a tap on the note never toggles the photo.
+ */
+function buildCaptionRow(uuid) {
+  const row = el('div', 'caption-row');
+
+  const view = el('button', 'caption-view');
+  view.type = 'button';
+  const viewText = el('span', 'caption-text');
+  view.appendChild(viewText);
+
+  const tick = el('span', 'caption-tick', 'Saved');
+  tick.hidden = true;
+
+  const form = el('form', 'caption-edit');
+  form.hidden = true;
+  form.noValidate = true;
+
+  const input = el('textarea', 'caption-input');
+  input.rows = 2;
+  input.maxLength = CAPTION_MAX;
+  input.placeholder = 'A note from the two of you…';
+  input.setAttribute('aria-label', 'Note on this photo');
+
+  const foot = el('div', 'caption-foot');
+  const counter = el('span', 'caption-counter');
+  const cancel = el('button', 'btn btn-small btn-quiet caption-cancel', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn btn-small btn-primary caption-save', 'Save');
+  save.type = 'submit';
+  foot.append(counter, cancel, save);
+  form.append(input, foot);
+
+  row.append(view, tick, form);
+
+  view.addEventListener('click', () => openCaptionEditor(uuid));
+  cancel.addEventListener('click', () => closeCaptionEditor(frames.get(uuid), true));
+  input.addEventListener('input', () => syncCaptionCounter(frames.get(uuid)));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); closeCaptionEditor(frames.get(uuid), true); }
+    // Single-line feel: Enter saves, Shift+Enter still breaks the line.
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveCaption(uuid); }
+  });
+  form.addEventListener('submit', (event) => { event.preventDefault(); saveCaption(uuid); });
+
+  return { row, view, viewText, tick, form, input, counter, save };
+}
+
 function buildFrame(uuid) {
+  const card = el('div', 'photo-card');
+  card.dataset.uuid = uuid;
+
   const root = el('button', 'frame');
   root.type = 'button';
   root.dataset.uuid = uuid;
@@ -393,9 +450,27 @@ function buildFrame(uuid) {
   root.append(thumb, badge, meta);
   root.addEventListener('click', () => togglePhoto(uuid));
 
-  const frame = { root, img, thumb, nick, time, badge, loaded: false };
+  const caption = buildCaptionRow(uuid);
+  card.append(root, caption.row);
+
+  const frame = {
+    card, root, img, thumb, nick, time, badge, loaded: false, saving: false, ...caption,
+  };
   frames.set(uuid, frame);
   return frame;
+}
+
+/** The stored note for a photo, trimmed ('' when the couple left none). */
+function captionOf(uuid) {
+  const data = photoDocs.find((p) => p.uuid === uuid);
+  return data && typeof data.caption === 'string' ? data.caption.trim() : '';
+}
+
+function paintCaption(frame, data) {
+  const text = typeof data.caption === 'string' ? data.caption.trim() : '';
+  frame.viewText.textContent = text || ADD_NOTE_LABEL;
+  frame.view.classList.toggle('is-empty', !text);
+  frame.view.setAttribute('aria-label', text ? `Note: ${text}. Tap to edit.` : 'Add a note to this photo.');
 }
 
 function paintFrame(frame, data) {
@@ -403,6 +478,7 @@ function paintFrame(frame, data) {
   frame.nick.textContent = data.nickname || 'Unknown guest';
   frame.time.textContent = fmtDateTime(data.receivedAt);
   frame.badge.hidden = !hidden;
+  frame.card.classList.toggle('hidden-photo', hidden);
   frame.root.classList.toggle('hidden-photo', hidden);
   frame.root.setAttribute('aria-pressed', String(hidden));
   frame.root.setAttribute(
@@ -410,6 +486,73 @@ function paintFrame(frame, data) {
     `${hidden ? 'Hidden' : 'Visible'} photo by ${data.nickname || 'unknown guest'}, `
     + `${fmtDateTime(data.receivedAt)}. Tap to ${hidden ? 'unhide' : 'hide'}.`,
   );
+  paintCaption(frame, data);
+}
+
+/* ── caption editing (ADMIN-009) ──────────────────────────────────── */
+function syncCaptionCounter(frame) {
+  if (!frame) return;
+  // `fill()`, paste and IME can all land more than maxlength — clamp for real.
+  if (frame.input.value.length > CAPTION_MAX) frame.input.value = frame.input.value.slice(0, CAPTION_MAX);
+  const used = frame.input.value.length;
+  frame.counter.textContent = `${used}/${CAPTION_MAX}`;
+  frame.counter.classList.toggle('is-full', used >= CAPTION_MAX);
+}
+
+function openCaptionEditor(uuid) {
+  const frame = frames.get(uuid);
+  if (!frame) return;
+  frame.tick.hidden = true;
+  frame.input.value = captionOf(uuid);
+  syncCaptionCounter(frame);
+  frame.view.hidden = true;
+  frame.form.hidden = false;
+  frame.card.classList.add('is-editing');
+  frame.input.focus();
+  const end = frame.input.value.length;
+  frame.input.setSelectionRange(end, end);
+}
+
+function closeCaptionEditor(frame, focusBack = false) {
+  if (!frame) return;
+  frame.form.hidden = true;
+  frame.view.hidden = false;
+  frame.card.classList.remove('is-editing');
+  if (focusBack) frame.view.focus();
+}
+
+const SAVED_TICK_MS = 2200;
+
+function flashSaved(frame) {
+  frame.tick.hidden = false;
+  clearTimeout(frame.tickTimer);
+  frame.tickTimer = setTimeout(() => { frame.tick.hidden = true; }, SAVED_TICK_MS);
+}
+
+/** Writes `caption` and its audit doc in one batch (ADMIN-008 / CONTRACTS §5). */
+async function saveCaption(uuid) {
+  const frame = frames.get(uuid);
+  if (!frame || frame.saving) return;
+  const next = frame.input.value.trim().slice(0, CAPTION_MAX);
+  if (next === captionOf(uuid)) { closeCaptionEditor(frame, true); return; }
+  frame.saving = true;
+  frame.save.disabled = true;
+  frame.save.textContent = 'Saving…';
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'photos', uuid), { caption: next });
+    batch.set(doc(collection(db, 'audit')), auditEntry('caption', uuid));
+    await batch.commit();
+    closeCaptionEditor(frame);
+    flashSaved(frame);
+  } catch (error) {
+    // The editor stays open with the typed text so nothing the couple wrote is lost.
+    reportError('Could not save that note', error);
+  } finally {
+    frame.saving = false;
+    frame.save.disabled = false;
+    frame.save.textContent = 'Save';
+  }
 }
 
 function renderPhotos(docs) {
@@ -425,17 +568,20 @@ function renderPhotos(docs) {
     : 'Nothing developed yet.';
 
   const seen = new Set();
-  for (const data of docs) {
+  docs.forEach((data, index) => {
     seen.add(data.uuid);
     const frame = frames.get(data.uuid) || buildFrame(data.uuid);
     paintFrame(frame, data);
-    grid.appendChild(frame.root); // re-append keeps newest-first ordering
-    if (frame.loaded) continue;
+    // Only move a card that is actually out of place: re-inserting a node blurs
+    // whatever is focused inside it, and a caption editor may be open (ADMIN-009).
+    const at = grid.children[index];
+    if (at !== frame.card) grid.insertBefore(frame.card, at || null);
+    if (frame.loaded) return;
     if (thumbObserver) thumbObserver.observe(frame.root);
     else loadThumb(data.uuid);
-  }
+  });
   for (const [uuid, frame] of frames) {
-    if (!seen.has(uuid)) { frame.root.remove(); frames.delete(uuid); }
+    if (!seen.has(uuid)) { frame.card.remove(); frames.delete(uuid); }
   }
 }
 

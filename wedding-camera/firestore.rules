@@ -112,10 +112,16 @@ service cloud.firestore {
       allow get, list: if isAdmin()
         || (hasGallery() && eventCfg().galleryReleased == true
             && resource.data.status == 'visible');
+      // GALLERY-007: the couple may also caption a photo. `caption` is optional — an
+      // absent field and '' both mean "no caption", and removing the key is a valid
+      // clear — so it is only validated when the request actually carries it.
       allow update: if isAdmin()
-        && changed().hasOnly(['status', 'rotation'])
+        && changed().hasOnly(['status', 'rotation', 'caption'])
         && request.resource.data.status in ['visible', 'hidden']
-        && request.resource.data.rotation in [0, 90, 180, 270];
+        && request.resource.data.rotation in [0, 90, 180, 270]
+        && (!('caption' in request.resource.data)
+            || (request.resource.data.caption is string
+                && request.resource.data.caption.size() <= 200));
       allow create, delete: if false;
     }
 
@@ -140,7 +146,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasAll(['action', 'actorUid', 'at'])
         && request.resource.data.actorUid == request.auth.uid
         && request.resource.data.action in
-             ['hide', 'unhide', 'rotate', 'pause', 'resume', 'grant', 'release', 'export']
+             ['hide', 'unhide', 'rotate', 'caption', 'pause', 'resume', 'grant', 'release', 'export']
         && (request.resource.data.get('target', null) == null
             || (request.resource.data.target is string
                 && request.resource.data.target.size() <= 200))

@@ -84,7 +84,8 @@ after the event.
 - **ADMIN-005**: Grant additional snaps to a specific device (listed by nickname).
 - **ADMIN-006**: One-click ZIP of all visible (optionally all) photos at stored quality, filenames = timestamp + nickname.
 - **ADMIN-007**: Release the gallery (one-way in UI; reversible in console). 
-- **ADMIN-008**: Every admin action (hide/unhide/pause/resume/grant/release/export) writes an audit record.
+- **ADMIN-008**: Every admin action (hide/unhide/caption/pause/resume/grant/release/export) writes an audit record.
+- **ADMIN-009**: The couple can write a short note (caption) on any photo — visible or hidden — edited in place on the photo card: ≤200 characters with a live counter, Enter saves, Escape cancels, clearing it stores an empty string. The caption and its audit record are written in one batch.
 
 ### Gallery
 - **GALLERY-001**: Before release, gallery URL shows a "still developing" page.
@@ -93,6 +94,8 @@ after the event.
 - **GALLERY-004**: Gallery/admin pages send `noindex` and are excluded via robots.txt.
 - **GALLERY-005**: Viewers can download all visible photos as a single ZIP, prepared server-side and handed over as a link to tap.
 - **GALLERY-006**: Viewers can multi-select photos and download the selection — one photo saves directly, several are zipped in the browser (max 60).
+- **GALLERY-007**: A photo the couple captioned (ADMIN-009) shows that note in the full-screen view, above the attribution line and in the photo's accessible name; on the wall the tile carries a small quote mark so notes are discoverable. Photos with no caption look exactly as before.
+- **GALLERY-008**: A viewer who took photos on this device sees a "Your film" strip of their own frames above the wall, opening into the same full-screen view; a viewer who took none sees nothing. A "Photos by" chip row lists each guest with their frame count and filters the wall to one guest, with "All" resetting it. Both are live views of the released photos and nothing about them is persisted; "Download all" always means the whole album.
 
 ### Privacy
 - **PRIVACY-001**: Consent line shown before the first photo can be taken.
@@ -107,9 +110,9 @@ after the event.
 Loading → Welcome/name+consent → (permission prompt) → Viewfinder.
 Error/edge states: Permission denied (per-platform help + native fallback) · Camera unavailable (native fallback) · Capturing (~0.8s lockout, blackout+sound+wind-on) · Pending badge ("N sending…") · Offline badge ("will send when signal returns") · Retry badge · Leave-with-queue warning · No snaps ("film used up" end card + final upload status) · Event not started · Event ended · Paused ("camera resting") · Invalid link · Cap reached (renders as Event ended — guests never see the cap).
 
-**Admin**: Login · Grid (live, hide/unhide) · Devices (grant snaps) · Controls (pause, release, ZIP) · confirmation modals for pause/release.
+**Admin**: Login · Grid (live, hide/unhide, inline caption editor) · Devices (grant snaps) · Controls (pause, release, ZIP) · confirmation modals for pause/release.
 
-**Gallery**: Developing (locked) · PIN entry (+ rate-limit error) · Photo wall · Photo detail/download · Empty state.
+**Gallery**: Developing (locked) · PIN entry (+ rate-limit error) · Photo wall (+ "Your film" strip and "Photos by" chips) · Photo detail/download (+ the couple's caption) · Empty state.
 
 ## 6. Snap allowance (summary — full design in plan §8)
 
@@ -147,4 +150,4 @@ real backstops = event cap, per-device upload spacing, window, pause, size/type 
 
 Native/installed apps · video/GIF/live photos · guest accounts/contact capture ·
 facial recognition · strict per-person enforcement · multi-event admin · push/email/SMS ·
-likes/comments · participation stats · admin-entered HTML/JS theming.
+guest-written captions/likes/comments · participation stats · admin-entered HTML/JS theming.

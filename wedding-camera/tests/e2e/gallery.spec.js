@@ -1,16 +1,19 @@
 /**
- * E2E for the gallery surface (workstream ④, PRD GALLERY-002/003/004/005/006).
+ * E2E for the gallery surface (workstream ④, PRD GALLERY-002..008).
  *
  * Covers the journey the couple's guests actually take weeks after the day:
  * cover + PIN card → wrong PIN error → correct PIN (verifyGalleryPin callable
  * + getIdToken(true), CONTRACTS §4) → photo wall with its view toggle →
- * full-screen photo detail (counter, keyboard paging, focus return).
+ * full-screen photo detail (counter, keyboard paging, focus return) → the
+ * couple's captions, the viewer's own "Your film" strip and the "Photos by"
+ * chip filter.
  *
  * Assumes the seeded fixture (slug `testslug123`, PIN `2468`) with the gallery
  * released — same emulator suite as the other specs.
  */
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
+import { assertStorageRulesLoaded, openHarness, pending } from './helpers.js';
 
 const GALLERY = '/gallery/index.html?slug=testslug123';
 
@@ -206,6 +209,160 @@ test.describe('bulk download (GALLERY-005/006)', () => {
     await expect(page.locator('#lightbox')).toBeVisible();
   });
 
+});
+
+/* ── the couple's captions (GALLERY-007 / ADMIN-009) ──────────────── */
+
+/** Signs in to the darkroom. Always in its OWN context: the admin session would
+ *  otherwise replace the gallery's anonymous user on the shared origin. */
+async function signInAdmin(page) {
+  await page.goto('/admin/');
+  await page.fill('#login-email', 'admin@test.dev');
+  await page.fill('#login-password', 'testpass123');
+  await page.click('#login-submit');
+  await expect(page.locator('#app')).toHaveAttribute('data-state', 'main', { timeout: 30_000 });
+  await expect(page.locator('.photo-card').first()).toBeVisible({ timeout: 30_000 });
+}
+
+/** Writes a note on one admin card and waits for the editor to close. */
+async function setCaption(card, text) {
+  await card.locator('.caption-view').click();
+  const input = card.locator('.caption-input');
+  await expect(input).toBeVisible();
+  await input.fill(text);
+  await card.locator('.caption-save').click();
+  await expect(input).toBeHidden({ timeout: 30_000 });
+}
+
+test.describe('captions in the album (GALLERY-007)', () => {
+  test('an admin note reaches the lightbox, badges its tile, and clears live', async ({ browser }) => {
+    const note = 'The moment the band realised Grandma could sing.';
+
+    const admin = await browser.newContext();
+    const adminPage = await admin.newPage();
+    const viewer = await browser.newPage(); // its own context: a plain guest
+
+    try {
+      await signInAdmin(adminPage);
+      // Newest-first in the darkroom, so the last card is the roll's first frame.
+      const card = adminPage.locator('.photo-card').last();
+      const uuid = await card.getAttribute('data-uuid');
+      expect(uuid).toBeTruthy();
+      await setCaption(card, note);
+
+      await unlock(viewer);
+      const tile = viewer.locator(`.shot[data-uuid="${uuid}"]`);
+      await expect(tile).toBeVisible({ timeout: 30_000 });
+      // Discoverable on the wall without shouting.
+      await expect(tile.locator('.shot-quote')).toBeVisible({ timeout: 30_000 });
+      await expect(tile).toHaveAttribute('aria-label', new RegExp(note.slice(0, 20)));
+
+      await tile.click();
+      await expect(viewer.locator('#lightbox')).toBeVisible();
+      await expect(viewer.locator('#lightbox-caption')).toBeVisible();
+      await expect(viewer.locator('#lightbox-caption')).toHaveText(note);
+      await expect(viewer.locator('#lightbox-by')).toContainText('by');
+      // Accessible name carries the note too.
+      await expect(viewer.locator('#lightbox-img'))
+        .toHaveAttribute('alt', new RegExp(note.slice(0, 20)));
+      await viewer.keyboard.press('Escape');
+
+      // Clearing the note is a live, empty-string write — badge and line go away.
+      await setCaption(card, '');
+      await expect(tile.locator('.shot-quote')).toBeHidden({ timeout: 30_000 });
+      await tile.click();
+      await expect(viewer.locator('#lightbox-caption')).toBeHidden();
+    } finally {
+      await admin.close();
+      await viewer.context().close();
+    }
+  });
+});
+
+/* ── "Your film" + "Photos by" chips (GALLERY-008) ────────────────── */
+
+test.describe('Your film strip (GALLERY-008)', () => {
+  test.beforeAll(assertStorageRulesLoaded);
+
+  test('a viewer who shot nothing gets no strip at all', async ({ page }) => {
+    await unlock(page);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('#myfilm')).toBeHidden();
+  });
+
+  test('a guest sees exactly the frames this browser took', async ({ page }) => {
+    // Real journey: shoot through the guest pipeline, then open the album in the
+    // SAME context — the anonymous uid is what ties the two together.
+    await openHarness(page);
+    await page.evaluate(() => window.__h.signIn('Film Owner'));
+    await page.evaluate(() => window.__h.initQueue());
+    const uuids = await page.evaluate(() => window.__h.shoot(2));
+    await expect.poll(() => pending(page), {
+      timeout: 120_000,
+      intervals: [300, 500, 1000],
+      message: 'the two frames should reach the server',
+    }).toBe(0);
+
+    await unlock(page);
+    await expect(page.locator('#myfilm')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('#myfilm-note')).toHaveText('2 frames you took');
+    await expect(page.locator('.filmshot')).toHaveCount(2);
+    for (const uuid of uuids) {
+      await expect(page.locator(`.filmshot[data-uuid="${uuid}"]`)).toBeVisible();
+    }
+
+    // A strip tile is a door into the same lightbox.
+    await page.locator(`.filmshot[data-uuid="${uuids[0]}"]`).click();
+    await expect(page.locator('#lightbox')).toBeVisible();
+    await expect(page.locator('#lightbox-by')).toContainText('Film Owner');
+  });
+});
+
+test.describe('Photos by chips (GALLERY-008)', () => {
+  test('a chip filters the wall and All puts it back', async ({ page }) => {
+    await unlock(page);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+    const total = await page.locator('.shot').count();
+
+    const chips = page.locator('.chip');
+    await expect(chips.first()).toBeVisible();
+    expect(await chips.count()).toBeGreaterThan(2); // All + at least two guests
+    await expect(chips.first()).toHaveAttribute('aria-pressed', 'true');
+    await expect(chips.first().locator('.chip-count')).toHaveText(String(total));
+
+    const pick = chips.nth(1);
+    const name = (await pick.locator('.chip-name').textContent()).trim();
+    const count = Number((await pick.locator('.chip-count').textContent()).trim());
+    expect(count).toBeGreaterThan(0);
+    expect(count).toBeLessThan(total);
+
+    await pick.click();
+    await expect(pick).toHaveAttribute('aria-pressed', 'true');
+    await expect(chips.first()).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('.shot')).toHaveCount(count);
+    await expect(page.locator('#toolbar-count'))
+      .toHaveText(`${count} photo${count === 1 ? '' : 's'}`);
+    // The header keeps the whole-album count: Download all never narrows.
+    await expect(page.locator('#wall-count')).toHaveText(`${total} photos`);
+    await expect(page.locator('#download-all')).toBeEnabled();
+
+    const labels = await page.locator('.shot')
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute('aria-label')));
+    expect(labels).toHaveLength(count);
+    for (const label of labels) expect(label).toContain(`by ${name}`);
+
+    await chips.first().click();
+    await expect(chips.first()).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.shot')).toHaveCount(total);
+    await expect(page.locator('#toolbar-count')).toHaveText(`${total} photos`);
+  });
+});
+
+/* ── Download all (GALLERY-005) — kept LAST on purpose ─────────────────
+ * The server-side ZIP build streams every object through the Storage emulator's
+ * Admin-SDK path, which reliably wedges the emulator's rules runtime for whatever
+ * runs next. Production is unaffected; locally, nothing may follow this test. */
+test.describe('whole-album download (GALLERY-005)', () => {
   test('Download all asks the server for one ZIP', async ({ page }) => {
     await unlock(page);
     await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });

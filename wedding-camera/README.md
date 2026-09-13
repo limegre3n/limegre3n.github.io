@@ -30,6 +30,9 @@ Tests:
 node tests/poc/pipeline.mjs       # backend pipeline verification (emulators running)
 node --test tests/rules/          # security-rules suite (emulators running)
 npm run test:e2e                  # Playwright browser tests (fake camera)
+# Emulator note: the Storage emulator's rules runtime can hang after heavy load
+# (server ZIP builds, long upload runs). If gallery tests stall on image fetches,
+# restart the emulators and run tests/e2e/gallery.spec.js on its own first.
 ```
 
 ## Production setup (one-time, ~30 minutes)
