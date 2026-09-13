@@ -17,6 +17,7 @@ import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
 import { zip } from 'fflate';
 import { applyTheme } from '../lib/theme.js';
+import { imagePathOf, openSlideshow } from '../lib/slideshow.js';
 
 const app = document.getElementById('app');
 const views = new Map(
@@ -295,9 +296,10 @@ function applyThemeHero() {
 function applyWallHero() {
   if (config && config.theme && config.theme.heroImagePath) return; // theme hero wins
   const first = photos[0];
-  if (!first || !first.storagePath || wallHeroPath === first.storagePath) return;
-  wallHeroPath = first.storagePath;
-  photoUrl(first.storagePath).then((url) => {
+  const path = first ? imagePathOf(first) : '';
+  if (!path || wallHeroPath === path) return;
+  wallHeroPath = path;
+  photoUrl(path).then((url) => {
     const img = $('wall-hero-img');
     img.src = url;
     img.classList.add('is-blurred');
@@ -334,10 +336,11 @@ const SLOW_MS = 20_000;
 /** Shared by the wall and the "Your film" strip — both go through `photoUrl`,
  *  so a frame in both places is fetched once and its URL reused (GALLERY-008). */
 function loadTile(tile, data) {
-  if (!tile || !data || tile.requested || !data.storagePath) return;
+  const path = data ? imagePathOf(data) : '';
+  if (!tile || tile.requested || !path) return;
   tile.requested = true;
   const slow = setTimeout(() => failTile(tile), SLOW_MS);
-  photoUrl(data.storagePath).then((url) => {
+  photoUrl(path).then((url) => {
     tile.img.addEventListener('load', () => {
       clearTimeout(slow);
       tile.frame.classList.remove('is-failed');
@@ -436,6 +439,7 @@ function renderWall() {
   renderSelection();
 
   applyWallHero();
+  notifySlideshow(); // GALLERY-009: the show follows the album, live
   if (!$('lightbox').hidden) syncDetail();
 }
 
@@ -598,6 +602,7 @@ function startWall() {
 }
 
 function stopWall() {
+  if (slideshow) slideshow.close();
   if (wallUnsub) { wallUnsub(); wallUnsub = null; }
   stopMyFilm();
   setSelectMode(false, false);
@@ -684,7 +689,7 @@ function showFrame(uuid) {
     if (detailUuid === uuid) detailFailed('This photo is taking too long. Try again in a moment.');
   }, SLOW_MS);
 
-  photoUrl(data.storagePath, true).then((url) => {
+  photoUrl(imagePathOf(data), true).then((url) => {
     if (detailUuid !== uuid) return;
     img.addEventListener('load', () => {
       if (detailUuid !== uuid) return;
@@ -827,7 +832,7 @@ function withDeadline(promise, ms, message) {
 async function fetchPhotoBlob(data, front = false) {
   const abort = new AbortController();
   const job = (async () => {
-    const url = await photoUrl(data.storagePath, front);
+    const url = await photoUrl(imagePathOf(data), front);
     const res = await fetch(url, { signal: abort.signal });
     if (!res.ok) throw new Error(`http ${res.status}`);
     return res.blob();
@@ -961,6 +966,7 @@ function syncToolbarActions() {
   // GALLERY-005 always means the WHOLE album; Select works on what is shown.
   $('download-all').disabled = packing || photos.length === 0;
   $('select-toggle').disabled = packing || shown.length === 0;
+  $('slideshow-btn').disabled = photos.length === 0; // GALLERY-009
 }
 
 /** In select mode a tile is a checkbox, not a link into the lightbox. */
@@ -1130,6 +1136,110 @@ async function downloadSelection() {
 
 $('sel-download').addEventListener('click', downloadSelection);
 
+/* ── slideshow / TV mode (GALLERY-009) ────────────────────────────── */
+/* The album on the venue TV, with a corner card carrying this gallery's own
+ * QR code so the room can scan while it plays. The show always runs over the
+ * WHOLE album, never the chip filter — the filter is a way of reading the wall,
+ * not a way of editing the evening.
+ *
+ * The PIN is never persisted anywhere on the client. Whatever a viewer typed to
+ * unlock this session lives in `sessionPin` and dies with the tab; a viewer who
+ * walked in on a remembered claim never typed one, so the sheet asks first and
+ * that answer, too, lasts only for the session. */
+let sessionPin = '';
+let pinForScreen = null;   // null = never asked this session; '' = asked, skipped
+let slideshow = null;
+const slideshowFeeds = new Set();
+
+function notifySlideshow() {
+  for (const feed of slideshowFeeds) feed(photos);
+}
+
+/** Subscribe contract of lib/slideshow.js: current frames now, then every change. */
+function albumFeed(onPhotos) {
+  slideshowFeeds.add(onPhotos);
+  onPhotos(photos);
+  return () => slideshowFeeds.delete(onPhotos);
+}
+
+/** This gallery's own address, without the dev `?slug=` or any other query. */
+function albumUrl() {
+  return `${window.location.origin}${window.location.pathname}`;
+}
+
+function startSlideshow(pin) {
+  if (photos.length === 0 || slideshow) return;
+  closeDetail();
+  slideshow = openSlideshow({
+    photos$: albumFeed,
+    imageUrlFor: (path) => photoUrl(path, true), // the open show jumps the queue
+    config,
+    qr: { url: albumUrl(), label: 'Scan to see the album', pin },
+    variant: 'gallery',
+    onClose: () => { slideshow = null; },
+  });
+}
+
+/* — the "show the PIN?" sheet — */
+const pinSheet = () => $('pinsheet');
+
+function openPinSheet() {
+  $('pinsheet-error').hidden = true;
+  $('pinsheet-input').value = '';
+  pinSheet().hidden = false;
+  document.body.classList.add('is-locked');
+  setTimeout(() => $('pinsheet-input').focus({ preventScroll: true }), 30);
+}
+
+function closePinSheet(focusBack = true) {
+  if (pinSheet().hidden) return;
+  pinSheet().hidden = true;
+  document.body.classList.remove('is-locked');
+  if (focusBack) $('slideshow-btn').focus({ preventScroll: true });
+}
+
+$('slideshow-btn').addEventListener('click', () => {
+  if (sessionPin) { startSlideshow(sessionPin); return; }
+  if (pinForScreen !== null) { startSlideshow(pinForScreen); return; }
+  openPinSheet();
+});
+
+$('pinsheet-input').addEventListener('input', (event) => {
+  const cleaned = event.target.value.replace(/\D+/g, '').slice(0, 6);
+  if (cleaned !== event.target.value) event.target.value = cleaned;
+  $('pinsheet-error').hidden = true;
+});
+
+$('pinsheet-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  // Digits only, 4–6 of them — checked here, never against the server: this
+  // sheet decides what goes on a screen, not who may see the album.
+  const pin = $('pinsheet-input').value.replace(/\D+/g, '');
+  if (pin.length < 4 || pin.length > 6) {
+    $('pinsheet-error').textContent = 'The PIN is 4 to 6 digits.';
+    $('pinsheet-error').hidden = false;
+    $('pinsheet-input').focus({ preventScroll: true });
+    return;
+  }
+  pinForScreen = pin;
+  closePinSheet(false);
+  startSlideshow(pin);
+});
+
+$('pinsheet-skip').addEventListener('click', () => {
+  pinForScreen = '';
+  closePinSheet(false);
+  startSlideshow('');
+});
+
+$('pinsheet-close').addEventListener('click', () => closePinSheet());
+pinSheet().addEventListener('click', (event) => {
+  if (event.target === pinSheet()) closePinSheet();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !pinSheet().hidden) closePinSheet();
+});
+
 /* ── PIN entry (GALLERY-002) ──────────────────────────────────────── */
 const pinCells = [...$('pin-cells').children];
 
@@ -1189,6 +1299,7 @@ $('pin-form').addEventListener('submit', async (event) => {
       // CONTRACTS §4: the claim only lands in a freshly minted token.
       await auth.currentUser.getIdToken(true);
       unlocked = true;
+      sessionPin = pin; // GALLERY-009: in memory, for this tab, never stored
       input.value = '';
       renderPinCells();
       openGallery();

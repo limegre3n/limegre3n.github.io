@@ -9,13 +9,13 @@
  * `testslug123` and the admin account admin@test.dev / testpass123.
  */
 import { test, expect } from '@playwright/test';
-import { firestoreGet } from './helpers.js';
+import { firestoreGet, EMULATOR_FIRESTORE, PROJECT_ID } from './helpers.js';
 
 const CAPTION_MAX = 200;
 
 /** Signs in to /admin/ and waits for the contact sheet to paint. */
-async function signInAdmin(page) {
-  await page.goto('/admin/');
+async function signInAdmin(page, query = '') {
+  await page.goto(`/admin/${query}`);
   await page.fill('#login-email', 'admin@test.dev');
   await page.fill('#login-password', 'testpass123');
   await page.click('#login-submit');
@@ -134,5 +134,80 @@ test.describe('admin captions (ADMIN-009)', () => {
       await card.locator('.frame').click(); // unhide
       await expect(card.locator('.frame')).toHaveAttribute('aria-pressed', 'false', { timeout: 30_000 });
     }
+  });
+});
+
+
+/* ── live wall / TV mode (ADMIN-010) ──────────────────────────────── */
+
+/* The slideshow holds each frame for 7s; on localhost ?slideshowInterval pins it
+ * open so the card, the counter and the exit can be checked without waiting. */
+const TV_HELD = '?slideshowInterval=60000';
+
+const FS_BASE = `http://${EMULATOR_FIRESTORE}/v1/projects/${PROJECT_ID}`
+  + '/databases/(default)/documents';
+
+/**
+ * Flips a photo's status out-of-band (Firestore emulator REST, owner auth). The
+ * live wall covers the darkroom while it plays, so a moderation change has to
+ * arrive the way it would from the couple's other phone.
+ */
+async function setStatus(uuid, status) {
+  const url = `${FS_BASE}/photos/${uuid}?updateMask.fieldPaths=status`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: { status: { stringValue: status } } }),
+  });
+  if (!res.ok) throw new Error(`emulator PATCH photos/${uuid} → ${res.status}`);
+}
+
+/** "3 / 26" → 26. The total is what a live hide changes. */
+async function frameTotal(page) {
+  const text = await page.locator('.tv-count').textContent();
+  return Number(String(text).split('/')[1].trim());
+}
+
+test.describe('live wall (ADMIN-010)', () => {
+  test('plays the visible photos behind the camera QR, with no PIN anywhere', async ({ page }) => {
+    await signInAdmin(page, TV_HELD);
+    // Newest first in the darkroom — hiding this one never disturbs the caption specs.
+    const newest = await page.locator('.photo-card').first().getAttribute('data-uuid');
+    expect(newest).toBeTruthy();
+
+    await page.click('#live-btn');
+    const tv = page.locator('.tv');
+    await expect(tv).toBeVisible();
+    await expect(tv).toHaveAttribute('role', 'dialog');
+    await expect(tv).toHaveAttribute('aria-label', 'Slideshow');
+    await expect(tv).toHaveAttribute('data-variant', 'admin');
+
+    // The card points at the guest camera, and the darkroom never shows a PIN.
+    const qr = await page.locator('.tv-qr').evaluate((canvas) => ({
+      width: canvas.width,
+      bytes: canvas.toDataURL().length,
+    }));
+    expect(qr.width).toBeGreaterThan(100);
+    expect(qr.bytes).toBeGreaterThan(1000);
+    await expect(page.locator('.tv-qr-label')).toHaveText('Scan to take photos');
+    await expect(page.locator('.tv-pin-digits')).toHaveCount(0);
+    await expect(page.locator('.tv-pin')).toHaveCount(0);
+
+    // A frame hidden from somewhere else leaves the rotation while it plays.
+    const before = await frameTotal(page);
+    expect(before).toBeGreaterThan(1);
+    try {
+      await setStatus(newest, 'hidden');
+      await expect.poll(() => frameTotal(page), { timeout: 30_000 }).toBe(before - 1);
+    } finally {
+      await setStatus(newest, 'visible');
+    }
+    await expect.poll(() => frameTotal(page), { timeout: 30_000 }).toBe(before);
+
+    // Exit is always reachable, and the darkroom is still there behind it.
+    await page.keyboard.press('Escape');
+    await expect(tv).toHaveCount(0);
+    await expect(page.locator('#app')).toHaveAttribute('data-state', 'main');
+    await expect(page.locator('.photo-card').first()).toBeVisible();
   });
 });

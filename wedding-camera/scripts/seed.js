@@ -27,6 +27,7 @@ await db.doc('config/event').set({
   paused: false,
   defaultSnaps: 10,
   galleryReleased: false,
+  dateStamp: true,
   theme: {
     welcomeText: 'Grab the camera and catch the moments we’ll miss!',
     consentText: 'Photos you take will be shared with the couple and may appear in the wedding gallery.',

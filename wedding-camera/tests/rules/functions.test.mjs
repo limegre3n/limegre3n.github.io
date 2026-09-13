@@ -537,8 +537,15 @@ describe('pause deferral + reconciliation', () => {
 
     // A second sweep must be a complete no-op.
     const again = await admin.call('reconcileNow', { minAgeMs: 0, prefix: `uploads/${deviceUid}/` });
-    assert.deepEqual(again, { scanned: 0, accepted: 0, rejected: 0, deferred: 0 },
+    // Upload counters must all be zero; the develop sweep (CONTRACTS §11) reports its
+    // own counters alongside and may legitimately pick up other tests' pending frames.
+    const { scanned, accepted, rejected, deferred } = again;
+    assert.deepEqual({ scanned, accepted, rejected, deferred },
+      { scanned: 0, accepted: 0, rejected: 0, deferred: 0 },
       'a settled object is skipped entirely on the next sweep');
+    for (const k of ['developed', 'developFailed', 'developCleared']) {
+      assert.equal(typeof again[k], 'number', `${k} is reported`);
+    }
 
     await new Promise((r) => setTimeout(r, 2000));
     const photos = await adb.collection('photos').where('deviceUid', '==', deviceUid).get();

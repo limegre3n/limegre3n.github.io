@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { httpsCallable } from 'firebase/functions';
+import { imagePathOf, openSlideshow } from '../lib/slideshow.js';
 
 const GRANT_SNAPS = 10;
 
@@ -188,6 +189,7 @@ function renderControls() {
   const pauseBtn = $('pause-btn');
   const releaseBtn = $('release-btn');
 
+  $('live-btn').disabled = !eventConfig || !eventConfig.slug; // ADMIN-010
   if (!eventConfig) {
     pausePill.textContent = 'Uploads —';
     releasePill.textContent = 'Gallery —';
@@ -361,9 +363,10 @@ function ensureThumbObserver() {
 function loadThumb(uuid) {
   const frame = frames.get(uuid);
   const data = photoDocs.find((p) => p.uuid === uuid);
-  if (!frame || !data || frame.loaded || !data.storagePath) return;
+  const path = data ? imagePathOf(data) : '';
+  if (!frame || frame.loaded || !path) return;
   frame.loaded = true;
-  thumbUrl(data.storagePath).then((url) => {
+  thumbUrl(path).then((url) => {
     frame.img.src = url;
     frame.img.hidden = false;
     frame.thumb.firstChild.textContent = '';
@@ -583,6 +586,7 @@ function renderPhotos(docs) {
   for (const [uuid, frame] of frames) {
     if (!seen.has(uuid)) { frame.card.remove(); frames.delete(uuid); }
   }
+  notifyLiveWall(); // ADMIN-010: a hide takes the frame out of the show, live
 }
 
 async function togglePhoto(uuid) {
@@ -606,6 +610,56 @@ async function togglePhoto(uuid) {
     frame.root.classList.remove('busy');
   }
 }
+
+/* ── live wall / TV mode (ADMIN-010) ──────────────────────────────── */
+/* The same slideshow the gallery uses (lib/slideshow.js), fed from the live
+ * admin query so a frame that lands during dinner joins the rotation on its own
+ * and a frame the couple hide leaves it. Only 'visible' photos ever appear —
+ * the darkroom is where hidden frames live, never the TV. The corner card
+ * carries the GUEST CAMERA link, so the room can pick up a camera, and never a
+ * gallery PIN. */
+const liveFeeds = new Set();
+let liveWall = null;
+
+function visiblePhotos() {
+  return photoDocs.filter((data) => data.status !== 'hidden');
+}
+
+function notifyLiveWall() {
+  for (const feed of liveFeeds) feed(visiblePhotos());
+}
+
+/** Subscribe contract of lib/slideshow.js: current frames now, then every change. */
+function liveFeed(onPhotos) {
+  liveFeeds.add(onPhotos);
+  onPhotos(visiblePhotos());
+  return () => liveFeeds.delete(onPhotos);
+}
+
+/** The address on the printed QR code: /e/{slug}/ (CONTRACTS §1). */
+function cameraUrl() {
+  return `${window.location.origin}/e/${eventConfig.slug}/`;
+}
+
+$('live-btn').addEventListener('click', () => {
+  if (liveWall) return;
+  if (!eventConfig || !eventConfig.slug) {
+    toast('The event link is not set up yet.', 'bad');
+    return;
+  }
+  if (visiblePhotos().length === 0) {
+    toast('No visible photos to show yet.');
+    return;
+  }
+  liveWall = openSlideshow({
+    photos$: liveFeed,
+    imageUrlFor: thumbUrl,
+    config: eventConfig,
+    qr: { url: cameraUrl(), label: 'Scan to take photos' },
+    variant: 'admin',
+    onClose: () => { liveWall = null; },
+  });
+});
 
 /* ── devices (ADMIN-005) ──────────────────────────────────────────── */
 function renderDevices(docs) {
@@ -658,6 +712,7 @@ async function grantSnaps(uid, nickname, button) {
 /* ── subscriptions ────────────────────────────────────────────────── */
 let unsubs = [];
 function stopSubscriptions() {
+  if (liveWall) liveWall.close();
   for (const unsub of unsubs) { try { unsub(); } catch { /* ignore */ } }
   unsubs = [];
   eventConfig = null;

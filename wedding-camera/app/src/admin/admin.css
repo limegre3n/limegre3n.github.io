@@ -125,10 +125,13 @@ button { font: inherit; color: inherit; }
 .pill.on { color: var(--ok); border-color: currentColor; }
 .pill.warn { color: var(--danger); border-color: currentColor; }
 .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-.btn-row #zip-btn { grid-column: 1 / -1; }
+/* ADMIN-006 / ADMIN-010: the two whole-event actions get a full row on a phone. */
+.btn-row #zip-btn,
+.btn-row #live-btn { grid-column: 1 / -1; }
 @media (min-width: 520px) {
-  .btn-row { grid-template-columns: repeat(3, 1fr); }
-  .btn-row #zip-btn { grid-column: auto; }
+  .btn-row { grid-template-columns: repeat(4, 1fr); }
+  .btn-row #zip-btn,
+  .btn-row #live-btn { grid-column: auto; }
 }
 
 /* recovery sweep (UPLOAD-009): quiet, sits under the pause/release row */

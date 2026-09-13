@@ -122,6 +122,10 @@ const consentText = await ask('Consent line (shown before the first photo)', {
 const monogramText = await ask('Monogram (e.g. A♥S)', {
   def: theme.monogramText || '', validate: (v) => (v.length <= 16 ? null : 'Max 16 characters'),
 });
+const dateStamp = (await ask('Burn a 90s orange date stamp into developed photos? (yes/no)', {
+  def: existing.dateStamp === false ? 'no' : 'yes',
+  validate: (v) => (/^(yes|no)$/i.test(v) ? null : 'yes or no'),
+})).toLowerCase() === 'yes';
 const font = await ask(`Font (${FONTS.join(' / ')})`, {
   def: theme.font || 'system', validate: (v) => (FONTS.includes(v) ? null : `One of: ${FONTS.join(', ')}`),
 });
@@ -157,6 +161,7 @@ console.log(`  Window:      ${fmt(startAt)}  →  ${fmt(endAt)}  (+7 days upload
 console.log(`  Slug:        ${slug}`);
 console.log(`  Snaps/phone: ${defaultSnaps}   Event cap: ${eventCap}`);
 console.log(`  Theme:       ${font}, ${bg} / ${accent} / ${text}, monogram "${monogramText}"`);
+console.log(`  Date stamp:  ${dateStamp ? 'on' : 'off'}`);
 console.log(`  Gallery PIN: ${pin ? pin : '(unchanged)'}   Delete by: ${fmt(deleteBy)}`);
 const ok = await ask('Write these to Firestore? (yes/no)', { validate: (v) => (/^(yes|no)$/i.test(v) ? null : 'yes or no') });
 if (ok.toLowerCase() !== 'yes') { console.log('Cancelled — nothing written.'); rl.close(); process.exit(0); }
@@ -166,6 +171,7 @@ await db.doc('config/event').set({
   startAt: Timestamp.fromDate(startAt), endAt: Timestamp.fromDate(endAt),
   paused: existing.paused === true, defaultSnaps,
   galleryReleased: existing.galleryReleased === true,
+  dateStamp,
   theme: { welcomeText, consentText, font, monogramText, heroImagePath: theme.heroImagePath ?? null,
     colors: { bg, accent, text } },
 });

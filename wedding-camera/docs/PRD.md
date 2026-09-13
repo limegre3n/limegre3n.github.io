@@ -86,6 +86,12 @@ after the event.
 - **ADMIN-007**: Release the gallery (one-way in UI; reversible in console). 
 - **ADMIN-008**: Every admin action (hide/unhide/caption/pause/resume/grant/release/export) writes an audit record.
 - **ADMIN-009**: The couple can write a short note (caption) on any photo — visible or hidden — edited in place on the photo card: ≤200 characters with a live counter, Enter saves, Escape cancels, clearing it stores an empty string. The caption and its audit record are written in one batch.
+- **ADMIN-010**: The couple can put a **live wall** on a TV or laptop at the venue: a
+  full-screen, auto-advancing slideshow of the photos as they land, newest frames
+  joining the rotation by themselves and a frame they hide leaving it within seconds.
+  Only `status: 'visible'` photos ever appear. A persistent corner card carries a QR
+  code for the **guest camera** link (`/e/{slug}/`) with "Scan to take photos" and
+  **never a gallery PIN**. Same controls and keyboard as GALLERY-009.
 
 ### Gallery
 - **GALLERY-001**: Before release, gallery URL shows a "still developing" page.
@@ -96,6 +102,18 @@ after the event.
 - **GALLERY-006**: Viewers can multi-select photos and download the selection — one photo saves directly, several are zipped in the browser (max 60).
 - **GALLERY-007**: A photo the couple captioned (ADMIN-009) shows that note in the full-screen view, above the attribution line and in the photo's accessible name; on the wall the tile carries a small quote mark so notes are discoverable. Photos with no caption look exactly as before.
 - **GALLERY-008**: A viewer who took photos on this device sees a "Your film" strip of their own frames above the wall, opening into the same full-screen view; a viewer who took none sees nothing. A "Photos by" chip row lists each guest with their frame count and filters the wall to one guest, with "All" resetting it. Both are live views of the released photos and nothing about them is persisted; "Download all" always means the whole album.
+- **GALLERY-009**: After release, a viewer can play the album as a **slideshow** on a
+  TV or laptop: full screen, black, one frame at a time over a blurred copy of itself,
+  advancing every 7 s with a crossfade and a slow Ken Burns move (plain crossfade when
+  the viewer prefers reduced motion). The couple's note and the "nickname · time" line
+  sit bottom-left; a white corner card bottom-right carries a QR code for **this
+  gallery's** link with "Scan to see the album". The PIN is shown in large digits only
+  when someone in the room typed it this session, or answered the one-off
+  "Show the PIN on screen?" sheet — the PIN is never stored on the device, and
+  "Skip, no PIN" leaves the card without one. The show always runs over the whole
+  album, never the "Photos by" filter. Controls (pause, prev/next, shuffle, QR toggle,
+  exit) appear on movement and fade after 3 s; Space/←/→/S/Q/Esc do the same from a
+  keyboard, and the screen is kept awake while it plays.
 
 ### Privacy
 - **PRIVACY-001**: Consent line shown before the first photo can be taken.
@@ -110,9 +128,9 @@ after the event.
 Loading → Welcome/name+consent → (permission prompt) → Viewfinder.
 Error/edge states: Permission denied (per-platform help + native fallback) · Camera unavailable (native fallback) · Capturing (~0.8s lockout, blackout+sound+wind-on) · Pending badge ("N sending…") · Offline badge ("will send when signal returns") · Retry badge · Leave-with-queue warning · No snaps ("film used up" end card + final upload status) · Event not started · Event ended · Paused ("camera resting") · Invalid link · Cap reached (renders as Event ended — guests never see the cap).
 
-**Admin**: Login · Grid (live, hide/unhide, inline caption editor) · Devices (grant snaps) · Controls (pause, release, ZIP) · confirmation modals for pause/release.
+**Admin**: Login · Grid (live, hide/unhide, inline caption editor) · Devices (grant snaps) · Controls (pause, release, ZIP, live wall) · Live wall / TV mode · confirmation modals for pause/release.
 
-**Gallery**: Developing (locked) · PIN entry (+ rate-limit error) · Photo wall (+ "Your film" strip and "Photos by" chips) · Photo detail/download (+ the couple's caption) · Empty state.
+**Gallery**: Developing (locked) · PIN entry (+ rate-limit error) · Photo wall (+ "Your film" strip and "Photos by" chips) · Photo detail/download (+ the couple's caption) · Slideshow / TV mode (+ "Show the PIN on screen?" sheet) · Empty state.
 
 ## 6. Snap allowance (summary — full design in plan §8)
 

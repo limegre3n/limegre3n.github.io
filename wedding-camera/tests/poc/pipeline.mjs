@@ -12,9 +12,13 @@
  *      → unpause → admin reconcileNow sweep → accepted, exactly one snap consumed
  *   8. quota exhausted → upload rejected 'quota'
  *   9. guest cannot read config/private
- *  10. gallery "Download all" (exportGalleryZip): claim gate, release gate,
- *      visible-only ZIP, the shared server-side cache on a second call, and the
- *      build lock that collapses a concurrent cold-cache burst into one build
+ *  10. film development: a filtered upload gets a developed/{uuid} copy, the date
+ *      stamp alone is enough to develop a 'clean' shot, dateStamp off + clean means
+ *      no developed copy at all, an unknown stock id degrades to 'clean', and
+ *      redevelopAll is admin-only
+ *  11. gallery "Download all" (exportGalleryZip): claim gate, release gate,
+ *      visible-only ZIP, developed bytes in the archive, the shared server-side cache
+ *      on a second call, and the build lock that collapses a cold-cache burst into one
  *
  * Usage: node tests/poc/pipeline.mjs   (emulators must be running + seeded)
  */
@@ -74,11 +78,28 @@ function waitForResult(uuid, timeoutMs = 30000) {
   });
 }
 
-async function uploadAs(uid, uuid, bytes) {
+async function uploadAs(uid, uuid, bytes, extraMetadata = {}) {
   return uploadBytes(ref(storage, `uploads/${uid}/${uuid}`), bytes, {
     contentType: 'image/jpeg',
-    customMetadata: { capturedAt: String(Date.now()) },
+    customMetadata: { capturedAt: String(Date.now()), ...extraMetadata },
   });
+}
+
+/**
+ * Polls `photos/{uuid}` (Admin SDK) until `predicate` holds. Development runs AFTER the
+ * results doc is written, so `waitForResult` returning is not proof the developed copy
+ * is on disk yet.
+ */
+async function waitForPhoto(uuid, predicate, timeoutMs = 45000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    const snap = await adb.doc(`photos/${uuid}`).get();
+    last = snap.exists ? snap.data() : null;
+    if (last && predicate(last)) return last;
+    if (Date.now() > deadline) return last;
+    await new Promise((r) => setTimeout(r, 500));
+  }
 }
 
 /**
@@ -197,8 +218,123 @@ let privErr = null;
 try { await getDoc(doc(db, 'config', 'private')); } catch (e) { privErr = e; }
 check('config/private unreadable by guests', privErr?.code === 'permission-denied', String(privErr?.code));
 
-// 10. Gallery "Download all pictures" — exportGalleryZip (claim gate, release gate,
-//     visible-only contents, and the shared server-side cache).
+/** A plain anonymous caller (no admin, no gallery claim) for permission checks. */
+async function anonCaller() {
+  const clientApp = initializeApp({
+    apiKey: 'demo-key', projectId: 'demo-wedding',
+    storageBucket: 'demo-wedding.appspot.com', appId: 'demo-app',
+  }, `poc-anon-${crypto.randomUUID()}`);
+  const cAuth = getAuth(clientApp);
+  connectAuthEmulator(cAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  await signInAnonymously(cAuth);
+  const fns = getFunctions(clientApp, 'asia-southeast1');
+  connectFunctionsEmulator(fns, '127.0.0.1', 5001);
+  return { call: (name, data) => httpsCallable(fns, name)(data).then((r) => r.data) };
+}
+const stranger0 = await anonCaller();
+
+// 10. Film development (CONTRACTS §11). The originals are never touched; a second
+//     object at developed/{uuid} carries the stock look and the optional date stamp.
+
+const cfgBefore = (await adb.doc('config/event').get()).data();
+const dateStampBefore = cfgBefore.dateStamp;
+// Fresh film: step 8 emptied this device on purpose.
+await adb.doc(`devices/${uid}`).update({ snapsRemaining: 10 });
+await adb.doc('config/event').update({ dateStamp: true });
+
+// (a) a filtered upload is developed with the stock baked in.
+const uuidGolden = crypto.randomUUID();
+await uploadAs(uid, uuidGolden, TINY_JPEG, { filter: 'golden', tzOffsetMinutes: '480' });
+const resGolden = await waitForResult(uuidGolden);
+check('filtered upload is accepted', resGolden.ok === true, JSON.stringify(resGolden));
+const goldenPhoto = await waitForPhoto(uuidGolden, (p) => p.developPending === false);
+check('photos doc records the chosen film stock',
+  goldenPhoto?.filter === 'golden' && goldenPhoto?.tzOffsetMinutes === 480,
+  JSON.stringify({ filter: goldenPhoto?.filter, tz: goldenPhoto?.tzOffsetMinutes }));
+check('photos doc points at developed/{uuid}',
+  goldenPhoto?.developedPath === `developed/${uuidGolden}`
+  && goldenPhoto?.developedAt != null && goldenPhoto?.developPending === false,
+  JSON.stringify({ path: goldenPhoto?.developedPath, pending: goldenPhoto?.developPending }));
+
+const developedFile = abucket.file(`developed/${uuidGolden}`);
+const [developedExists] = await developedFile.exists();
+check('developed object exists in storage', developedExists === true);
+let developedBytes = null;
+if (developedExists) {
+  [developedBytes] = await developedFile.download();
+}
+check('developed object is a real JPEG',
+  developedBytes?.[0] === 0xff && developedBytes?.[1] === 0xd8,
+  `head ${developedBytes?.subarray(0, 3)}`);
+const [originalBytes] = await abucket.file(`uploads/${uid}/${uuidGolden}`).download();
+check('developed copy differs from the original, which is untouched',
+  developedBytes != null && !developedBytes.equals(originalBytes)
+  && originalBytes.equals(TINY_JPEG),
+  `developed ${developedBytes?.length}B vs original ${originalBytes.length}B`);
+
+// (b) dateStamp alone is reason enough to develop a 'clean' shot.
+const uuidStampOnly = crypto.randomUUID();
+await uploadAs(uid, uuidStampOnly, TINY_JPEG, { filter: 'clean' });
+await waitForResult(uuidStampOnly);
+const stampPhoto = await waitForPhoto(uuidStampOnly, (p) => p.developPending === false);
+check('clean stock still develops while the date stamp is on',
+  stampPhoto?.filter === 'clean' && stampPhoto?.developedPath === `developed/${uuidStampOnly}`,
+  JSON.stringify({ filter: stampPhoto?.filter, path: stampPhoto?.developedPath }));
+check('the stamp-only developed object is stored',
+  (await abucket.file(`developed/${uuidStampOnly}`).exists())[0] === true);
+
+// (c) nothing to do: clean stock, stamp off → no developed copy at all.
+await adb.doc('config/event').update({ dateStamp: false });
+const uuidNoDev = crypto.randomUUID();
+await uploadAs(uid, uuidNoDev, TINY_JPEG, { filter: 'clean' });
+await waitForResult(uuidNoDev);
+const plainPhoto = await waitForPhoto(uuidNoDev, (p) => p.status === 'visible');
+check('clean stock + stamp off is never developed',
+  plainPhoto?.developedPath === null && plainPhoto?.developPending === false
+  && plainPhoto?.developedAt === null,
+  JSON.stringify({ path: plainPhoto?.developedPath, pending: plainPhoto?.developPending }));
+check('no developed object is written for an undeveloped photo',
+  (await abucket.file(`developed/${uuidNoDev}`).exists())[0] === false);
+
+// (d) an unknown stock id is not a rejection — it degrades to 'clean'.
+const uuidBogus = crypto.randomUUID();
+await uploadAs(uid, uuidBogus, TINY_JPEG, { filter: 'kodachrome-64-deluxe' });
+const resBogus = await waitForResult(uuidBogus);
+check('an unknown film stock still accepts the photo', resBogus.ok === true, JSON.stringify(resBogus));
+const bogusPhoto = await waitForPhoto(uuidBogus, (p) => p.status === 'visible');
+check('an unknown film stock is stored as clean',
+  bogusPhoto?.filter === 'clean' && bogusPhoto?.developedPath === null,
+  JSON.stringify({ filter: bogusPhoto?.filter, path: bogusPhoto?.developedPath }));
+
+// (e) redevelopAll — admin only, re-develops against the CURRENT config.
+await adb.doc('config/event').update({ dateStamp: true });
+let redevDeniedErr = null;
+try { await stranger0.call('redevelopAll', {}); } catch (e) { redevDeniedErr = e; }
+check('redevelopAll denies a non-admin caller',
+  redevDeniedErr?.code === 'functions/permission-denied', String(redevDeniedErr?.code));
+
+// Page through the whole roll the way the admin UI does: startAfter = lastUuid while
+// `remaining` is true (the shared emulator may hold well over one page of photos).
+let redev = await adminCall('redevelopAll', { limit: 25 });
+check('redevelopAll processes a page of photos',
+  redev.processed > 0 && typeof redev.remaining === 'boolean'
+  && (redev.lastUuid === null || typeof redev.lastUuid === 'string'),
+  JSON.stringify(redev));
+for (let pages = 1; redev.remaining && redev.lastUuid && pages < 40; pages += 1) {
+  redev = await adminCall('redevelopAll', { limit: 25, startAfter: redev.lastUuid });
+}
+check('redevelopAll paging reaches the end of the roll', redev.remaining === false, JSON.stringify(redev));
+const redevAudit = await adb.collection('audit').where('action', '==', 'redevelop').get();
+check('redevelopAll writes exactly one audit record per call', redevAudit.size >= 1,
+  `${redevAudit.size} redevelop audit records`);
+// The photo that needed no developed copy gains one now that the stamp is back on.
+const restamped = await waitForPhoto(uuidNoDev, (p) => typeof p.developedPath === 'string');
+check('redevelopAll develops a photo that now needs the date stamp',
+  restamped?.developedPath === `developed/${uuidNoDev}`,
+  JSON.stringify({ path: restamped?.developedPath }));
+
+// 11. Gallery "Download all pictures" — exportGalleryZip (claim gate, release gate,
+//     visible-only contents, developed bytes, and the shared server-side cache).
 
 /** A throwaway anonymous identity, optionally carrying the `gallery` claim. */
 async function galleryClient(withClaim) {
@@ -235,7 +371,7 @@ async function fetchExport(url) {
   const res = await fetch(url, { headers: { Authorization: 'Bearer owner' } });
   if (!res.ok) return { status: res.status, head: null, bytes: 0 };
   const buf = Buffer.from(await res.arrayBuffer());
-  return { status: res.status, head: buf.subarray(0, 2), bytes: buf.length };
+  return { status: res.status, head: buf.subarray(0, 2), bytes: buf.length, buf };
 }
 
 // (a) no gallery claim → permission-denied, no URL handed out.
@@ -282,6 +418,13 @@ const download = await fetchExport(firstExport.url);
 check('gallery export url serves a real ZIP (PK magic bytes)',
   download.status === 200 && download.head?.[0] === 0x50 && download.head?.[1] === 0x4b,
   `status ${download.status}, head ${download.head}`);
+
+// (f) The archive carries the DEVELOPED copy wherever one exists. Entries are stored
+//     uncompressed (zlib level 0 — JPEGs do not recompress), so the developed bytes
+//     appear verbatim inside the ZIP and can simply be searched for.
+check('the gallery archive packs the developed copy, not the original',
+  developedBytes != null && download.buf != null && download.buf.includes(developedBytes),
+  `zip ${download.bytes}B, developed ${developedBytes?.length}B`);
 
 const cacheDoc = await adb.doc('config/galleryExport').get();
 const cachedPath = cacheDoc.data()?.path;
@@ -342,8 +485,11 @@ const raceAudits = await adb.collection('audit')
 check('a concurrent burst on a cold cache builds exactly once',
   raceAudits.size === 1, `${raceAudits.size} audit records for ${exportIdOf(racePath)}`);
 
-// Restore the shared flag for every other suite.
-await adb.doc('config/event').update({ galleryReleased: releasedBefore });
+// Restore the shared flags for every other suite (CONTRACTS §11 default: dateStamp on).
+await adb.doc('config/event').update({
+  galleryReleased: releasedBefore,
+  dateStamp: dateStampBefore === undefined ? true : dateStampBefore,
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

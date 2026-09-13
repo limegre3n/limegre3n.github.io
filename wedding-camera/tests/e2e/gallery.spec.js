@@ -17,8 +17,8 @@ import { assertStorageRulesLoaded, openHarness, pending } from './helpers.js';
 
 const GALLERY = '/gallery/index.html?slug=testslug123';
 
-async function unlock(page) {
-  await page.goto(GALLERY);
+async function unlock(page, url = GALLERY) {
+  await page.goto(url);
   await expect(page.locator('#app')).toHaveAttribute('data-state', 'pin', { timeout: 30_000 });
   await page.fill('#pin-input', '2468');
   await page.click('#pin-submit');
@@ -355,6 +355,117 @@ test.describe('Photos by chips (GALLERY-008)', () => {
     await expect(chips.first()).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.shot')).toHaveCount(total);
     await expect(page.locator('#toolbar-count')).toHaveText(`${total} photos`);
+  });
+});
+
+/* ── slideshow / TV mode (GALLERY-009) ────────────────────────────── */
+
+/* A frame holds for 7s on the venue TV, which is an age in a test. On localhost
+ * the module honours ?slideshowInterval, so the show can be pinned open (a very
+ * long hold) while the chrome is checked, and hurried along where the point is
+ * that it moves on its own. */
+const TV_HELD = `${GALLERY}&slideshowInterval=60000`;
+const TV_QUICK = `${GALLERY}&slideshowInterval=700`;
+
+test.describe('slideshow / TV mode (GALLERY-009)', () => {
+  test('plays the album with a QR card and the PIN, and Esc gives the wall back', async ({ page }) => {
+    await unlock(page, TV_HELD);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+    const total = await page.locator('.shot').count();
+
+    await page.click('#slideshow-btn');
+    const tv = page.locator('.tv');
+    await expect(tv).toBeVisible();
+    await expect(tv).toHaveAttribute('role', 'dialog');
+    await expect(tv).toHaveAttribute('aria-label', 'Slideshow');
+
+    // The first frame of the roll, actually painted on the stage.
+    await expect(page.locator('.tv-count')).toHaveText(`1 / ${total}`);
+    await expect(page.locator('.tv-layer.is-on')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.tv-layer.is-on .tv-photo')).toHaveJSProperty('complete', true);
+    await expect(page.locator('.tv-by')).not.toHaveText('');
+
+    // The corner card: a real QR code, and the PIN this viewer typed to get in.
+    const qr = await page.locator('.tv-qr').evaluate((canvas) => ({
+      width: canvas.width,
+      bytes: canvas.toDataURL().length,
+    }));
+    expect(qr.width).toBeGreaterThan(100);
+    expect(qr.bytes).toBeGreaterThan(1000);
+    await expect(page.locator('.tv-qr-label')).toHaveText('Scan to see the album');
+    await expect(page.locator('.tv-pin-digits')).toHaveText('2468');
+
+    // Next / previous step the roll; the hold is long enough that nothing else does.
+    await page.locator('.tv-btn[aria-label="Next photo"]').click();
+    await expect(page.locator('.tv-count')).toHaveText(`2 / ${total}`);
+    await page.locator('.tv-btn[aria-label="Previous photo"]').click();
+    await expect(page.locator('.tv-count')).toHaveText(`1 / ${total}`);
+
+    // Space pauses.
+    await page.keyboard.press(' ');
+    const play = page.locator('.tv-btn[aria-label="Play slideshow"]');
+    await expect(play).toHaveAttribute('aria-pressed', 'true');
+
+    // Q hides the card, Q brings it back.
+    await page.keyboard.press('q');
+    await expect(page.locator('.tv-card')).toBeHidden();
+    await page.keyboard.press('q');
+    await expect(page.locator('.tv-card')).toBeVisible();
+
+    // Escape always gets out, and the wall is exactly where it was left.
+    await page.keyboard.press('Escape');
+    await expect(tv).toHaveCount(0);
+    await expect(page.locator('#app')).toHaveAttribute('data-state', 'wall');
+    await expect(page.locator('.shot').first()).toBeVisible();
+  });
+
+  test('advances on its own and loops', async ({ page }) => {
+    await unlock(page, TV_QUICK);
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+
+    await page.click('#slideshow-btn');
+    await expect(page.locator('.tv-layer.is-on')).toBeVisible({ timeout: 60_000 });
+    const first = await page.locator('.tv-count').textContent();
+    // Nobody touches it: the frame changes by itself.
+    await expect.poll(() => page.locator('.tv-count').textContent(), { timeout: 60_000 })
+      .not.toBe(first);
+    await page.keyboard.press('Escape');
+  });
+
+  test('a remembered unlock is asked before the PIN goes on a screen', async ({ page }) => {
+    await unlock(page, TV_HELD);          // the PIN is typed here…
+    await page.reload();                  // …and this session never sees it again
+    await expect(page.locator('#app')).toHaveAttribute('data-state', 'wall', { timeout: 60_000 });
+    await expect(page.locator('.shot').first()).toBeVisible({ timeout: 30_000 });
+
+    await page.click('#slideshow-btn');
+    const sheet = page.locator('#pinsheet');
+    await expect(sheet).toBeVisible();
+    await expect(page.locator('#pinsheet-title')).toHaveText('Show the PIN on screen?');
+    await expect(page.locator('.tv')).toHaveCount(0); // nothing plays until it is answered
+
+    // Digits only, and 3 of them is not a PIN.
+    await page.fill('#pinsheet-input', '12a');
+    expect(await page.locator('#pinsheet-input').inputValue()).toBe('12');
+    await page.click('#pinsheet-go');
+    await expect(page.locator('#pinsheet-error')).toBeVisible();
+    await expect(page.locator('.tv')).toHaveCount(0);
+
+    // "Skip, no PIN" plays the show with a card that carries no PIN line at all.
+    await page.click('#pinsheet-skip');
+    await expect(sheet).toBeHidden();
+    await expect(page.locator('.tv')).toBeVisible();
+    await expect(page.locator('.tv-qr-label')).toHaveText('Scan to see the album');
+    await expect(page.locator('.tv-pin-digits')).toHaveCount(0);
+
+    // The answer holds for the session: the sheet does not ask twice.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.tv')).toHaveCount(0);
+    await page.click('#slideshow-btn');
+    await expect(sheet).toBeHidden();
+    await expect(page.locator('.tv')).toBeVisible();
+    await expect(page.locator('.tv-pin-digits')).toHaveCount(0);
+    await page.keyboard.press('Escape');
   });
 });
 

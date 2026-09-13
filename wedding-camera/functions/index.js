@@ -15,6 +15,9 @@ const { getFirestore, Timestamp, FieldValue } = require('firebase-admin/firestor
 const { getStorage } = require('firebase-admin/storage');
 const { getAuth } = require('firebase-admin/auth');
 const crypto = require('node:crypto');
+const {
+  DEFAULT_STOCK_ID, dateStampText, developBuffer, needsDevelop, resolveStockId, stockRecipe,
+} = require('./develop.js');
 
 initializeApp();
 const db = getFirestore();
@@ -59,6 +62,22 @@ const UPLOAD_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECONCILE_MIN_AGE_MS = 5 * 60 * 1000;
 /** Marker on errors thrown to make the Eventarc/Storage trigger retry (see §5). */
 const DEFERRED_TAG = 'upload-deferred';
+
+/**
+ * Film development (CONTRACTS §11). The originals are never touched: a developed copy
+ * lands at `developed/{uuid}` (bare uuid, exactly like uploads) and the gallery prefers
+ * it when `photos/{uuid}.developedPath` is set.
+ */
+const DEVELOPED_PREFIX = 'developed/';
+/** Guest-supplied tz offset is minutes to ADD to UTC; clamped to the real-world range. */
+const TZ_OFFSET_MIN = -840;
+const TZ_OFFSET_MAX = 840;
+/** How many pending develops one reconciliation sweep takes on, and how many at once. */
+const DEVELOP_SWEEP_LIMIT = 25;
+const DEVELOP_CONCURRENCY = 3;
+/** `redevelopAll` page size — the admin UI loops until `remaining` is false. */
+const REDEVELOP_DEFAULT_LIMIT = 100;
+const REDEVELOP_MAX_LIMIT = 200;
 
 /** JPEG magic bytes: FF D8 FF */
 function isJpeg(buf) {
@@ -130,6 +149,21 @@ function resolveCapturedAt(metadata, now) {
   return Timestamp.fromMillis(clamped);
 }
 
+/**
+ * The guest's UTC offset in minutes, as sent in the upload's custom metadata (a string
+ * integer, `-new Date().getTimezoneOffset()`). Absent/garbage → 0, and always clamped to
+ * the real-world range so a hostile value cannot walk the date stamp somewhere silly.
+ *
+ * @param {object|undefined} metadata  Storage object custom metadata
+ * @returns {number}
+ */
+function resolveTzOffset(metadata) {
+  const raw = metadata && metadata.tzOffsetMinutes;
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(TZ_OFFSET_MAX, Math.max(TZ_OFFSET_MIN, n));
+}
+
 function projectId() {
   if (process.env.GCLOUD_PROJECT) return process.env.GCLOUD_PROJECT;
   if (process.env.GCP_PROJECT) return process.env.GCP_PROJECT;
@@ -153,6 +187,136 @@ function isForeignBucket(bucket) {
   // Own buckets: `<project>.appspot.com`, `<project>.firebasestorage.app`, and the bare
   // `<project>` that @firebase/rules-unit-testing uses for its default bucket.
   return bucket !== pid && !bucket.startsWith(`${pid}.`);
+}
+
+/* ------------------------------------------------------------ film development --- */
+
+/**
+ * Build the developed copy for one accepted photo and store it at `developed/{uuid}`.
+ * Pure I/O plus a call into `develop.js`; the originals are read-only here and stay
+ * byte-identical forever (CONTRACTS §11).
+ *
+ * @param {string} uuid
+ * @param {object} photo                      the `photos/{uuid}` shape (or its fields)
+ * @param {object} cfg                        `config/event` data (for `dateStamp`)
+ * @returns {Promise<string>} the developed object path
+ */
+async function develop(uuid, photo, cfg) {
+  const bucket = getStorage().bucket();
+  const [buffer] = await bucket.file(photo.storagePath).download();
+  const stampText = cfg && cfg.dateStamp === true
+    ? dateStampText(
+      isTs(photo.capturedAt) ? photo.capturedAt.toMillis() : Date.now(),
+      Number(photo.tzOffsetMinutes) || 0)
+    : null;
+  const developed = await developBuffer(buffer, {
+    recipe: stockRecipe(resolveStockId(photo.filter)),
+    stampText,
+  });
+  const path = `${DEVELOPED_PREFIX}${uuid}`;
+  await bucket.file(path).save(developed, {
+    resumable: false,
+    contentType: 'image/jpeg',
+    metadata: { contentType: 'image/jpeg' },
+  });
+  return path;
+}
+
+/**
+ * Develop + record, never throw. A develop failure must not undo an accepted photo
+ * (CONTRACTS §11): the photo keeps `developPending: true` and the next reconciliation
+ * sweep (or `redevelopAll`) tries again.
+ *
+ * @returns {Promise<boolean>} true when the developed copy is stored and recorded
+ */
+async function developAndRecord(uuid, photo, cfg) {
+  try {
+    const developedPath = await develop(uuid, photo, cfg);
+    await db.doc(`photos/${uuid}`).update({
+      developedPath,
+      developedAt: Timestamp.now(),
+      developPending: false,
+    });
+    logger.info('photo developed', { uuid, filter: resolveStockId(photo.filter), developedPath });
+    return true;
+  } catch (err) {
+    logger.error('develop failed', { uuid, filter: photo && photo.filter, err: String(err) });
+    await db.doc(`photos/${uuid}`).update({ developPending: true }).catch(() => {});
+    return false;
+  }
+}
+
+/**
+ * Undo development for a photo that no longer needs it (the couple turned the date
+ * stamp off and the stock is 'clean'): drop the object, null the fields.
+ */
+async function undevelop(uuid, photo) {
+  const path = typeof photo.developedPath === 'string' ? photo.developedPath : null;
+  if (path && path.startsWith(DEVELOPED_PREFIX)) {
+    await getStorage().bucket().file(path).delete()
+      .catch((err) => logger.warn('could not delete developed object', { path, err: String(err) }));
+  }
+  await db.doc(`photos/${uuid}`).update({
+    developedPath: null,
+    developedAt: null,
+    developPending: false,
+  }).catch((err) => logger.warn('could not clear develop fields', { uuid, err: String(err) }));
+}
+
+/**
+ * Bring one photo in line with the CURRENT config and its stored stock: develop it if it
+ * needs a developed copy, otherwise clear one it no longer needs.
+ *
+ * @returns {Promise<'developed'|'failed'|'cleared'>}
+ */
+async function reconcileOnePhoto(uuid, photo, cfg) {
+  if (!needsDevelop(photo.filter, cfg)) {
+    await undevelop(uuid, photo);
+    return 'cleared';
+  }
+  return (await developAndRecord(uuid, photo, cfg)) ? 'developed' : 'failed';
+}
+
+/**
+ * Run `reconcileOnePhoto` over a list of photo snapshots with a small fixed concurrency
+ * — enough to hide the download/encode latency, small enough that a 1GiB function does
+ * not hold several full-size decodes in memory at once.
+ *
+ * @param {Array} docs  `photos` QueryDocumentSnapshots
+ * @param {object} cfg  `config/event` data
+ * @returns {Promise<{developed:number, developFailed:number, developCleared:number}>}
+ */
+async function developBatch(docs, cfg) {
+  const stats = { developed: 0, developFailed: 0, developCleared: 0 };
+  const queue = docs.slice();
+  const worker = async () => {
+    for (;;) {
+      const doc = queue.shift();
+      if (!doc) return;
+      const outcome = await reconcileOnePhoto(doc.id, doc.data(), cfg);
+      if (outcome === 'developed') stats.developed += 1;
+      else if (outcome === 'failed') stats.developFailed += 1;
+      else stats.developCleared += 1;
+    }
+  };
+  await Promise.all(Array.from({ length: DEVELOP_CONCURRENCY }, worker));
+  return stats;
+}
+
+/**
+ * Reconciliation sweep for film development: every photo still flagged
+ * `developPending` gets another go. A single-field equality query, so no composite
+ * index is needed (CONTRACTS §11).
+ */
+async function sweepDevelops() {
+  const [pending, cfgSnap] = await Promise.all([
+    db.collection('photos').where('developPending', '==', true).limit(DEVELOP_SWEEP_LIMIT).get(),
+    db.doc('config/event').get(),
+  ]);
+  const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+  const stats = await developBatch(pending.docs, cfg);
+  if (pending.size) logger.info('develop sweep complete', { ...stats, scanned: pending.size });
+  return stats;
 }
 
 /** A deferral is NOT a failure: the bytes stay in the bucket and we try again later. */
@@ -283,6 +447,13 @@ async function processUpload({ bucketName, filePath, size, metadata }) {
     const device = deviceSnap.data();
     if (!(Number(device.snapsRemaining) > 0)) return { ok: false, reason: 'quota' };
 
+    // The guest picked a film stock at capture time; the bytes are still the clean
+    // original, so the stock id (and their clock offset) ride along in the metadata.
+    const filter = resolveStockId(metadata && metadata.filter);
+    const tzOffsetMinutes = resolveTzOffset(metadata);
+    const capturedAt = resolveCapturedAt(metadata, now);
+    const pending = needsDevelop(filter, cfg);
+
     tx.update(deviceRef, { snapsRemaining: FieldValue.increment(-1) });
     tx.set(db.doc('counters/event'), { photoCount: FieldValue.increment(1) }, { merge: true });
     tx.set(photoRef, {
@@ -292,13 +463,26 @@ async function processUpload({ bucketName, filePath, size, metadata }) {
       byteSize,
       width: dims.width,
       height: dims.height,
-      capturedAt: resolveCapturedAt(metadata, now),
+      capturedAt,
       receivedAt: now,
       status: 'visible',
       rotation: 0,
+      filter,
+      tzOffsetMinutes,
+      developedPath: null,
+      developedAt: null,
+      // Flagged BEFORE the develop runs, so a crash mid-development is picked up by the
+      // reconciliation sweep instead of leaving an undeveloped photo behind forever.
+      developPending: pending,
     });
     tx.set(resultRef, { deviceUid: uid, ok: true, reason: null, at: now });
-    return { ok: true };
+    return {
+      ok: true,
+      photo: pending
+        ? { storagePath: filePath, filter, tzOffsetMinutes, capturedAt }
+        : null,
+      dateStamp: cfg.dateStamp === true,
+    };
   });
 
   if (outcome.duplicate) return { status: 'duplicate', uuid, uid };
@@ -314,6 +498,13 @@ async function processUpload({ bucketName, filePath, size, metadata }) {
     return { status: 'rejected', uuid, uid, reason: outcome.reason };
   }
   logger.info('upload accepted', { uuid, uid, size: byteSize, width: dims.width, height: dims.height });
+
+  // Development happens strictly AFTER acceptance and outside the transaction: it is a
+  // second, optional artefact. A failure here logs, leaves `developPending: true` for
+  // the sweep, and never takes the accepted photo (or the guest's snap) down with it.
+  if (outcome.photo) {
+    await developAndRecord(uuid, outcome.photo, { dateStamp: outcome.dateStamp });
+  }
   return { status: 'accepted', uuid, uid };
 }
 
@@ -417,11 +608,15 @@ async function sweepUploads({ minAgeMs = RECONCILE_MIN_AGE_MS, prefix = 'uploads
 /**
  * Scheduled safety net (CONTRACTS §5). Every 15 minutes, anything stranded for more
  * than 5 minutes gets another run through the pipeline. Deferred (paused) objects are
- * simply deferred again until the admin resumes, then accepted.
+ * simply deferred again until the admin resumes, then accepted. The same sweep also
+ * finishes any film development that failed or was interrupted (CONTRACTS §11).
  */
 exports.reconcileUploads = onSchedule(
-  { region: REGION, schedule: 'every 15 minutes', memory: '512MiB', timeoutSeconds: 540 },
-  async () => { await sweepUploads(); }
+  { region: REGION, schedule: 'every 15 minutes', memory: '1GiB', timeoutSeconds: 540 },
+  async () => {
+    await sweepUploads();
+    await sweepDevelops();
+  }
 );
 
 /**
@@ -431,7 +626,7 @@ exports.reconcileUploads = onSchedule(
  * an admin (or a test) target a sweep without touching `config/event`.
  */
 exports.reconcileNow = onCall(
-  { region: REGION, memory: '512MiB', timeoutSeconds: 540 },
+  { region: REGION, memory: '1GiB', timeoutSeconds: 540 },
   async (request) => {
     if (!request.auth || request.auth.token.admin !== true) {
       throw new HttpsError('permission-denied', 'Admin only.');
@@ -441,9 +636,61 @@ exports.reconcileNow = onCall(
       ? Math.max(0, Number(data.minAgeMs)) : RECONCILE_MIN_AGE_MS;
     const prefix = typeof data.prefix === 'string' && data.prefix.startsWith('uploads/')
       ? data.prefix : 'uploads/';
-    const stats = await sweepUploads({ minAgeMs, prefix });
+    const stats = { ...(await sweepUploads({ minAgeMs, prefix })), ...(await sweepDevelops()) };
     logger.info('reconcileNow', { actorUid: request.auth.uid, ...stats });
     return stats;
+  }
+);
+
+/**
+ * Admin "re-develop everything" (CONTRACTS §11). Re-runs development across accepted
+ * photos in `receivedAt` order using the CURRENT `config/event.dateStamp` and each
+ * photo's own stored stock, one page at a time so the admin UI can loop without ever
+ * risking the 540s ceiling:
+ *
+ *   { startAfter?: uuid, limit?: 1..200 } → { processed, remaining, lastUuid }
+ *
+ * A photo that no longer needs a developed copy (stock 'clean' and the stamp switched
+ * off) has its developed object deleted and its fields nulled, so turning the stamp off
+ * really does take it back off the gallery.
+ */
+exports.redevelopAll = onCall(
+  { region: REGION, memory: '1GiB', timeoutSeconds: 540 },
+  async (request) => {
+    if (!request.auth || request.auth.token.admin !== true) {
+      throw new HttpsError('permission-denied', 'Admin only.');
+    }
+    const data = request.data && typeof request.data === 'object' ? request.data : {};
+    const rawLimit = Math.floor(Number(data.limit));
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(REDEVELOP_MAX_LIMIT, Math.max(1, rawLimit))
+      : REDEVELOP_DEFAULT_LIMIT;
+
+    const cfgSnap = await db.doc('config/event').get();
+    const cfg = cfgSnap.exists ? cfgSnap.data() : {};
+
+    // `receivedAt` alone: a single-field index, no composite needed. One extra doc is
+    // fetched purely to answer `remaining` without a second query.
+    let query = db.collection('photos').orderBy('receivedAt').limit(limit + 1);
+    if (typeof data.startAfter === 'string' && data.startAfter) {
+      const cursor = await db.doc(`photos/${data.startAfter}`).get();
+      if (cursor.exists) query = query.startAfter(cursor);
+    }
+    const page = await query.get();
+    const docs = page.docs.slice(0, limit);
+    const stats = await developBatch(docs, cfg);
+
+    await db.collection('audit').add({
+      action: 'redevelop',
+      target: null,
+      actorUid: request.auth.uid,
+      at: Timestamp.now(),
+    });
+    const lastUuid = docs.length ? docs[docs.length - 1].id : null;
+    logger.info('redevelopAll', {
+      actorUid: request.auth.uid, processed: docs.length, lastUuid, ...stats,
+    });
+    return { processed: docs.length, remaining: page.size > limit, lastUuid };
   }
 );
 
@@ -563,14 +810,23 @@ async function zipBaseName() {
 }
 
 /**
- * Shared ZIP builder for both export callables. Streams every supplied `photos` doc's
- * original object into `exports/{exportId}.zip` and resolves once the object is closed.
+ * Shared ZIP builder for both export callables. Streams one object per supplied `photos`
+ * doc into `exports/{exportId}.zip` and resolves once the object is closed.
+ *
+ * Which object: the DEVELOPED copy when the photo has one and `developed` is on (that is
+ * the picture the gallery shows, so it is the picture people expect to download), the
+ * original otherwise. A developed path that points at a vanished object falls back to
+ * the original rather than dropping the photo. Entry names never change either way.
  *
  * @param {Array}  photoDocs  Firestore QueryDocumentSnapshots of `photos/{uuid}`.
  * @param {string} exportId   uuid naming the output object.
+ * @param {string} [downloadName]
+ * @param {object} [opts]
+ * @param {boolean} [opts.developed]  pack developed copies where available (default true)
  * @returns {Promise<{zipFile: object, count: number, missing: string[]}>}
  */
-async function buildZipFromPhotos(photoDocs, exportId, downloadName = 'photos.zip') {
+async function buildZipFromPhotos(photoDocs, exportId, downloadName = 'photos.zip',
+  { developed = true } = {}) {
   const archiver = require('archiver');
   const bucket = getStorage().bucket();
   const zipFile = bucket.file(`exports/${exportId}.zip`);
@@ -599,6 +855,11 @@ async function buildZipFromPhotos(photoDocs, exportId, downloadName = 'photos.zi
     const slice = photoDocs.slice(i, i + BATCH);
     const checked = await Promise.all(slice.map(async (doc) => {
       const p = doc.data();
+      if (developed && typeof p.developedPath === 'string' && p.developedPath) {
+        const devFile = bucket.file(p.developedPath);
+        const [devExists] = await devFile.exists().catch(() => [false]);
+        if (devExists) return { doc, p, source: devFile };
+      }
       if (!p.storagePath || typeof p.storagePath !== 'string') return null;
       const source = bucket.file(p.storagePath);
       const [exists] = await source.exists().catch(() => [false]);
@@ -635,6 +896,9 @@ exports.exportZip = onCall(
       throw new HttpsError('permission-denied', 'Admin only.');
     }
     const includeHidden = !!(request.data && request.data.includeHidden === true);
+    // Developed copies by default — that is what the couple see in the gallery. Passing
+    // `developed: false` gets the untouched originals (CONTRACTS §5).
+    const developed = !(request.data && request.data.developed === false);
 
     // No orderBy: a status+orderBy query would need a composite index, and the ZIP
     // entry names already carry the timestamp (ADMIN-006).
@@ -645,7 +909,8 @@ exports.exportZip = onCall(
     const bucket = getStorage().bucket();
     const exportId = crypto.randomUUID();
     const { zipFile, count } = await buildZipFromPhotos(
-      photos.docs, exportId, `${await zipBaseName()}-${includeHidden ? 'all' : 'visible'}.zip`);
+      photos.docs, exportId, `${await zipBaseName()}-${includeHidden ? 'all' : 'visible'}.zip`,
+      { developed });
 
     const { url, signed } = await exportUrl(bucket, zipFile);
     await db.collection('audit').add({
@@ -654,7 +919,7 @@ exports.exportZip = onCall(
       actorUid: request.auth.uid,
       at: Timestamp.now(),
     });
-    logger.info('export complete', { exportId, count, includeHidden, signed });
+    logger.info('export complete', { exportId, count, includeHidden, developed, signed });
     return { url, count };
   }
 );
@@ -694,10 +959,16 @@ const GALLERY_EXPORT_POLL_MS = 3 * 1000;
  */
 const GALLERY_EXPORT_KEEP_MS = 60 * 60 * 1000;
 
-/** sha256 over the sorted visible photo uuids — changes whenever the set changes. */
+/**
+ * sha256 over the sorted visible photos — changes whenever the set changes, and also
+ * whenever a photo gains, loses or re-points its developed copy, so a `redevelopAll`
+ * invalidates the cached archive instead of serving stale looks.
+ */
 function galleryExportSignature(photoDocs) {
-  const ids = photoDocs.map((d) => d.id).sort();
-  return crypto.createHash('sha256').update(ids.join(',')).digest('hex');
+  const keys = photoDocs
+    .map((d) => `${d.id}:${d.data().developedPath || ''}`)
+    .sort();
+  return crypto.createHash('sha256').update(keys.join(',')).digest('hex');
 }
 
 exports.exportGalleryZip = onCall(

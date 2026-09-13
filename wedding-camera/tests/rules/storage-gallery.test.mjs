@@ -11,6 +11,10 @@
  *   * uses a unique device uid + photo uuid so nothing collides;
  *   * seeds its own photo doc + object instead of spending a snap through the upload
  *     pipeline, and leaves them behind (harmless: unique ids, no counters touched).
+ *
+ * The developed/{uuid} cases mirror the uploads ones exactly — the two read rules are
+ * deliberately identical (CONTRACTS §3/§11), so hiding a photo must revoke BOTH the
+ * original and the developed copy in one move.
  */
 import { test, before, after } from 'node:test';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
@@ -54,6 +58,8 @@ before(async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
       await uploadBytes(ref(ctx.storage(), `uploads/${deviceUid}/${photoId}`),
         TINY_JPEG, { contentType: 'image/jpeg' });
+      await uploadBytes(ref(ctx.storage(), `developed/${photoId}`),
+        TINY_JPEG, { contentType: 'image/jpeg' });
     });
     await adb.doc(`photos/${photoId}`).set({
       deviceUid,
@@ -66,6 +72,11 @@ before(async () => {
       receivedAt: new Date(),
       status: 'visible',
       rotation: 0,
+      filter: 'golden',
+      tzOffsetMinutes: 480,
+      developedPath: `developed/${photoId}`,
+      developedAt: new Date(),
+      developPending: false,
     });
   } catch (err) {
     unavailable = `fixture setup failed: ${err && err.message}`;
@@ -111,4 +122,46 @@ test('gallery read: locked → denied; released → visible only; hidden/orphan 
       await adb.doc('config/event').update({ galleryReleased: original });
     }
   });
+});
+
+test('developed read mirrors uploads: released + visible only, hidden/orphan denied', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const path = `developed/${photoId}`;
+
+  await withSharedConfig(async () => {
+    const original = (await adb.doc('config/event').get()).data().galleryReleased;
+
+    await adb.doc('config/event').update({ galleryReleased: false });
+    await assertFails(getBytes(ref(asGallery(), path)));
+
+    await adb.doc('config/event').update({ galleryReleased: true });
+    try {
+      await assertSucceeds(getBytes(ref(asGallery(), path)));
+
+      // Hiding the photo revokes the developed copy exactly like the original.
+      await adb.doc(`photos/${photoId}`).update({ status: 'hidden' });
+      await assertFails(getBytes(ref(asGallery(), path)));
+      await adb.doc(`photos/${photoId}`).update({ status: 'visible' });
+
+      // No photos doc → unreachable, even though the object name is well formed.
+      await assertFails(getBytes(ref(asGallery(), `developed/${randomUUID()}`)));
+
+      await assertFails(getBytes(ref(asGuest(), path)));
+      await assertFails(getBytes(ref(env.unauthenticatedContext().storage(), path)));
+    } finally {
+      await adb.doc('config/event').update({ galleryReleased: original });
+    }
+  });
+});
+
+test('developed is never client-writable, not even by an admin', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  const asAdmin = () => env.authenticatedContext(`rulesadmin-${randomUUID().slice(0, 8)}`,
+    { admin: true }).storage();
+  const jpeg = { contentType: 'image/jpeg' };
+  // Only the develop pipeline (Admin SDK) may write here — a forged "developed" copy
+  // would otherwise be served to the whole gallery in place of the real photo.
+  await assertFails(uploadBytes(ref(asAdmin(), `developed/${randomUUID()}`), TINY_JPEG, jpeg));
+  await assertFails(uploadBytes(ref(asGallery(), `developed/${randomUUID()}`), TINY_JPEG, jpeg));
+  await assertFails(uploadBytes(ref(asGuest(), `developed/${photoId}`), TINY_JPEG, jpeg));
 });

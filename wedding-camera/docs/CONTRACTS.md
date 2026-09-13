@@ -60,6 +60,7 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
   paused: boolean,
   defaultSnaps: number,         // 10
   galleryReleased: boolean,
+  dateStamp: boolean,           // default true — burn the 90s date stamp into developed copies (§11)
   theme: {
     welcomeText: string, consentText: string,
     colors: { bg: string, accent: string, text: string },  // hex
@@ -100,9 +101,20 @@ All timestamps are Firestore `Timestamp`. Collection names are literal.
   byteSize: number, width: number, height: number,
   capturedAt: Timestamp /*client-claimed*/, receivedAt: Timestamp /*server*/,
   status: 'visible'|'hidden', rotation: 0|90|180|270,
-  caption?: string /*0..200 chars, GALLERY-007*/ }
+  caption?: string /*0..200 chars, GALLERY-007*/,
+  // Film development (§11) — always written by the finalize function.
+  filter: string,               // film-stock id, 'clean' when absent/unknown
+  tzOffsetMinutes: number,      // guest's UTC offset in minutes, 0 when absent, clamped ±840
+  developedPath: string|null,   // 'developed/{uuid}' once a developed copy exists
+  developedAt: Timestamp|null,
+  developPending: boolean }     // a developed copy is owed but not stored yet
 ```
-- Admin may update `status`, `rotation` and `caption` only.
+- Admin may update `status`, `rotation` and `caption` only. The five development fields
+  are **server-only** — written by the finalize function, `reconcileUploads` and
+  `redevelopAll` (all Admin SDK, so no rules change was needed).
+- **Readers (gallery + admin): show `developedPath` when it is a non-empty string,
+  otherwise `storagePath`.** `developPending: true` means the developed copy is on its
+  way; keep showing the original rather than a placeholder.
 - `caption` is **optional**: the finalize function never writes it, so most docs simply
   lack the key. Absent and `''` both mean "no caption" — readers must treat them the
   same, and the admin client may clear one either way (`''` or a field delete).
@@ -147,9 +159,10 @@ query(collection(db, 'photos'),
   target: string|null /*photo uuid or device uid*/, actorUid: string, at: Timestamp }
 ```
 - Create: admin only. No update/delete.
-- The server also writes `action: 'gallery-export'` (Admin SDK, `exportGalleryZip`).
-  That value is deliberately **not** added to the rules enum above, which governs
-  client writes only — no client may claim a gallery export.
+- The server also writes `action: 'gallery-export'` (Admin SDK, `exportGalleryZip`) and
+  `action: 'redevelop'` (Admin SDK, `redevelopAll`, always `target: null`). Neither value
+  is added to the rules enum above, which governs client writes only — no client may
+  claim a gallery export or a re-development.
 
 ### `pinAttempts/{uid}` — function-managed rate limiting. No client access.
 
@@ -166,6 +179,15 @@ No client access.
     validation in finalize function).
   - **Read**: admin claim only, or gallery claim + released + Firestore
     `photos/{uuid}.status == 'visible'` (cross-service `firestore.get`).
+- `developed/{uuid}` — the DEVELOPED copy of `photos/{uuid}` (film stock baked in, plus
+  the optional date stamp). Bare uuid, **no file extension**, contentType `image/jpeg`,
+  exactly like `uploads/`.
+  - **Write**: `if false`. Only the develop pipeline (Admin SDK) ever writes here; a
+    forged "developed" copy would otherwise be shown to the whole gallery in place of
+    the real photo.
+  - **Read**: identical to `uploads/` — admin claim, or gallery claim + released +
+    Firestore `photos/{uuid}.status == 'visible'`. Hiding a photo therefore revokes the
+    original and the developed copy in one move.
 - `theme/…` — hero/monogram images. Read: any signed-in user. Write: admin.
 - `exports/{exportId}.zip` — ZIP outputs from `exportZip` / `exportGalleryZip`.
   Read: admin only — gallery viewers get at the archive through the signed URL the
@@ -215,9 +237,11 @@ Lists objects under `uploads/`, and for each object older than 5 minutes that ha
 budget, and objects deferred while the event was paused (accepted on the first sweep after
 an admin resumes). Idempotent by construction — the `results/{uuid}` check inside
 `processUpload` and again inside its transaction means a sweep racing the trigger can only
-ever produce one photo and one decrement.
+ever produce one photo and one decrement. The same run then sweeps film development:
+up to **25** photos with `developPending == true`, **3** at a time (a single-field
+equality query — no composite index).
 
-### `reconcileNow` — callable `{ minAgeMs?: number, prefix?: string }` → `{ scanned, accepted, rejected, deferred }`
+### `reconcileNow` — callable `{ minAgeMs?: number, prefix?: string }` → `{ scanned, accepted, rejected, deferred, developed, developFailed, developCleared }`
 Admin claim required (`request.auth.token.admin === true`). Runs the same sweep immediately:
 the emergency "send everything now" button, and the only way tests can exercise
 reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) and `prefix`
@@ -227,10 +251,26 @@ reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) 
 - Requires auth. Rate limit via `pinAttempts/{uid}`: max 5 fails / 15 min → `retryAfterSec`.
 - `sha256(salt + pin) == galleryPinHash` and `galleryReleased` ⇒ set `gallery` claim.
 
-### `exportZip` — callable `{ includeHidden?: boolean }` → `{ url: string, count: number }`
-- Admin claim required. Streams all matching `photos` originals into
+### `exportZip` — callable `{ includeHidden?: boolean, developed?: boolean }` → `{ url: string, count: number }`
+- Admin claim required. Streams one object per matching `photos` doc into
   `exports/{exportId}.zip` (filename per photo: `YYYYMMDD-HHMMSS_{nickname}_{uuid8}.jpg`),
   returns a signed URL (24h). Writes `audit` entry.
+- `developed` defaults to **true**: the developed copy is packed wherever
+  `developedPath` is set, the original otherwise (a developed path whose object has
+  vanished falls back to the original rather than dropping the photo). `developed:false`
+  packs the untouched originals — the couple's archival copy. **Filenames are identical
+  either way**, so the two archives are drop-in replacements for each other.
+
+### `redevelopAll` — callable `{ startAfter?: uuid, limit?: 1..200 }` → `{ processed, remaining, lastUuid }`
+- Admin claim required (`request.auth.token.admin === true`); anything else →
+  `permission-denied`. `{ region: asia-southeast1, memory: '1GiB', timeoutSeconds: 540 }`.
+- Re-develops accepted photos in `receivedAt` order (single-field index) using the
+  **current** `config/event.dateStamp` and each photo's own stored `filter`. One page per
+  call — the admin UI loops while `remaining` is true, passing the previous `lastUuid`
+  back as `startAfter`. `limit` defaults to 100.
+- A photo that no longer needs a developed copy (stock `clean` and the stamp switched
+  off) has its `developed/{uuid}` object deleted and its three fields nulled.
+- Writes one `audit` doc `{ action: 'redevelop', target: null, actorUid, at }` per call.
 
 ### `exportGalleryZip` — callable `{}` → `{ url: string, count: number }`
 - Requires auth **and** `request.auth.token.gallery === true` (an `admin` claim also
@@ -239,8 +279,12 @@ reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) 
   ("The gallery is not open yet."), so a claim minted before a re-lock stops working.
 - **Only `status == 'visible'` photos**, always. There is no `includeHidden` switch —
   a gallery viewer must never reach a moderated-away photo.
+- Always packs the **developed** copy where one exists (same rule as `exportZip`'s
+  `developed:true`): guests download the pictures they were shown. There is no switch.
 - **Cached** (many guests tap "Download all"): `config/galleryExport` holds the last
-  build keyed by a signature over the sorted visible photo uuids. Same signature and
+  build keyed by a signature over the sorted visible photo uuids **and their
+  `developedPath`s**, so a `redevelopAll` invalidates the cache instead of serving stale
+  looks. Same signature and
   younger than 20h and the object still exists ⇒ the stored `path` is re-signed and
   returned without rebuilding; otherwise a fresh ZIP is built and the doc overwritten.
   Signed URLs are never persisted.
@@ -255,8 +299,8 @@ reconciliation (the emulator never fires schedules). `minAgeMs` (default 5 min) 
   (`galleryExportAttempts/{uid}`); exceeding it → `resource-exhausted`
   ("Please wait a little before downloading again."). Cache hits are free.
 - Writes an `audit` record `{ action: 'gallery-export', target: exportId, actorUid, at }`.
-- ZIP building (entry names, missing-object skipping) is shared with `exportZip` via
-  `buildZipFromPhotos(photoDocs, exportId)`.
+- ZIP building (entry names, developed-copy preference, missing-object skipping) is
+  shared with `exportZip` via `buildZipFromPhotos(photoDocs, exportId, name, { developed })`.
 
 Admin actions hide/unhide/rotate/caption/pause/resume/grant/release are **direct Firestore
 writes** (rules-gated to admin claim) + an `audit` doc written by the admin client in a batch.
@@ -333,13 +377,102 @@ All rendered text is inserted via `textContent` (never innerHTML) — XSS guard 
 - Seed script provides a canonical `config/event` + `config/private` fixture
   (slug `testslug123`, PIN `2468`).
 
-## 11. Cross-workstream ownership
+## 11. Film development (film stocks + date stamp)
+
+Guests pick a **film stock** on the camera. The upload itself stays the **clean
+original** and only carries the stock id; the server then "develops" a second copy with
+the real look. **Originals are never modified.** The gallery shows the developed copy
+when one exists.
+
+### The stock catalogue — `functions/film-stocks.json`
+
+Canonical, single source of truth, imported by the app **by relative path** (it is not
+served from Firestore and never changes at runtime):
+
+```js
+{ version: 1, stocks: [ {
+    id: string,                 // 'clean' | 'golden' | 'seaside' | 'portrait' | 'silver' | 'faded'
+    name: string,               // guest-facing label
+    css: { filter: string,      // CSS filter string approximating the recipe, for the LIVE viewfinder
+           grain: number,       // 0..1 opacity of a grain overlay
+           vignette: number },  // 0..1
+    recipe: null | {            // what the SERVER applies with sharp; null == clean
+      bw: boolean,
+      modulate: { brightness: number, saturation: number, hue: number /*degrees*/ },
+      tint: [r, g, b] | null,   // colour cast, normalised against its strongest channel
+      gamma: 1..3 | null,       // midtone lift
+      linear: [a, b] | null,    // extra affine pass
+      contrast: number,         // 1 = none; applied about mid-grey
+      lift: 0..40,              // adds to the blacks
+      grain: 0..30,             // gaussian noise sigma
+      vignette: 0..1 } } ] }
+```
+
+The six ids are fixed: `clean` (Clean), `golden` (Golden Hour), `seaside` (Seaside),
+`portrait` (Portrait Soft), `silver` (Silver), `faded` (Faded).
+
+`css.filter` is the **preview** contract: the guest camera applies it to the live
+viewfinder so the shot looks roughly like the developed result. It is an approximation,
+never the authority — the server recipe is. The two halves are deliberately separate so
+the look can be re-graded later (`redevelopAll`) without re-shooting anything.
+
+`scripts/develop-samples.js` renders one sample per stock offline (no emulator) so a
+recipe change can be eyeballed before it ships.
+
+### Upload custom metadata (set by the guest app)
+
+| key | type | meaning |
+|---|---|---|
+| `capturedAt` | string (epoch ms) | existing |
+| `filter` | string | film-stock id; absent or unknown → `'clean'` |
+| `tzOffsetMinutes` | string integer | minutes to **ADD** to UTC for the guest's local time, i.e. `-new Date().getTimezoneOffset()`; absent → `0`; clamped to `[-840, 840]` |
+
+Both new keys are advisory: an unknown stock and a nonsense offset degrade quietly and
+can never cost a snap or reject a photo.
+
+### When a photo is developed
+
+```js
+needsDevelop = filter !== 'clean' || config/event.dateStamp === true
+```
+
+- Not needed → `developedPath: null`, `developedAt: null`, `developPending: false`.
+- Needed → `developPending: true` is written **inside the acceptance transaction**, and
+  the develop itself runs in `processUpload` **after** the transaction has accepted the
+  photo — never before it, never inside it. On success:
+  `{ developedPath: 'developed/{uuid}', developedAt, developPending: false }`.
+  On failure: log and leave `developPending: true` for the next sweep.
+- **A develop failure must never reject the photo**, undo the snap, or touch the
+  original. Development is a second, optional artefact.
+
+### The date stamp
+
+A 90s quartz-date-back stamp burned into the bottom-right corner when
+`config/event.dateStamp === true`.
+
+- Text: `'YY M D` — apostrophe, 2-digit year, then month and day **without zero
+  padding**, space separated (e.g. `'26 9 13`).
+- Computed from `capturedAt + tzOffsetMinutes` — the guest's local date, not the
+  server's.
+- Rendered as **hand-written seven-segment SVG paths** (digits 0–9 plus the
+  apostrophe). No fonts, no fontconfig — neither is available in the Functions runtime.
+- `#ff9a2e` fill with a soft glow (a second blurred layer at 60–70% alpha) and a slight
+  italic skew; height ≈ 3.2 % of the image's longer edge; margins ≈ 3 % of width and
+  3.5 % of height; composited with `composite()`.
+
+### Output
+
+`sharp(buffer).rotate()` (honours EXIF orientation even though the guest app already
+strips EXIF) → recipe → grain → vignette → stamp → JPEG **quality 88**, **no
+`withMetadata()`** so the developed copy carries no EXIF at all.
+
+## 12. Cross-workstream ownership
 
 | Area | Owner |
 |---|---|
 | `app/src/guest/main.js`, camera.js, all guest UI/CSS | ① Guest UI |
 | `app/src/guest/queue.js`, persistence probe, retry/backoff | ② Upload engine |
-| `functions/`, `firestore.rules`, `storage.rules`, `tests/rules/` | ③ Backend |
+| `functions/` (incl. `film-stocks.json`), `firestore.rules`, `storage.rules`, `tests/rules/` | ③ Backend |
 | `app/admin/`, `app/gallery/`, `app/src/{admin,gallery}/` | ④ Admin+Gallery |
 | `lib/firebase.js`, `lib/theme.js`, `firebase.json`, this file | Orchestrator (pre-built) |
 

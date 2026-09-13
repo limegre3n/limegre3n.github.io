@@ -51,6 +51,21 @@ describe('config/event', () => {
     }));
   });
 
+  test('admin may switch the date stamp on and off (CONTRACTS §11)', async () => {
+    const db = asAdmin();
+    await assertSucceeds(updateDoc(doc(db, 'config', 'event'), { dateStamp: false }));
+    await assertSucceeds(updateDoc(doc(db, 'config', 'event'), { dateStamp: true }));
+    // Same type discipline as paused/galleryReleased: the develop pipeline branches on
+    // it, so a truthy string must never get through.
+    await assertFails(updateDoc(doc(db, 'config', 'event'), { dateStamp: 'yes' }));
+    await assertFails(updateDoc(doc(db, 'config', 'event'), { dateStamp: 1 }));
+  });
+
+  test('guest and gallery viewer cannot touch the date stamp', async () => {
+    await assertFails(updateDoc(doc(asGuest(), 'config', 'event'), { dateStamp: false }));
+    await assertFails(updateDoc(doc(asGallery(), 'config', 'event'), { dateStamp: false }));
+  });
+
   test('admin cannot repoint the slug or inflate defaultSnaps', async () => {
     const db = asAdmin();
     await assertFails(updateDoc(doc(db, 'config', 'event'), { slug: 'otherslug99' }));

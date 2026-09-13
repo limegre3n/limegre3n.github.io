@@ -108,6 +108,7 @@ export function eventConfig(overrides = {}) {
     paused: false,
     defaultSnaps: DEFAULT_SNAPS,
     galleryReleased: false,
+    dateStamp: true,
     theme: {
       welcomeText: 'Grab the camera!',
       consentText: 'Photos are shared with the couple.',

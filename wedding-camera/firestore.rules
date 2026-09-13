@@ -41,12 +41,16 @@ service cloud.firestore {
       // create) stay console-only so a hijacked admin session cannot re-point the
       // event or mint unlimited snaps.
       allow update: if isAdmin()
-        && changed().hasOnly(['paused', 'galleryReleased', 'theme',
+        && changed().hasOnly(['paused', 'galleryReleased', 'dateStamp', 'theme',
                               'coupleNames', 'eventDateText', 'startAt', 'endAt'])
         && request.resource.data.slug == resource.data.slug
         && request.resource.data.defaultSnaps == resource.data.defaultSnaps
         && request.resource.data.paused is bool
         && request.resource.data.galleryReleased is bool
+        // CONTRACTS §11: the couple's switch for the 90s date stamp on developed copies.
+        // dateStamp arrived after launch: an event doc created before it exists must
+        // keep accepting pause/release updates, so it is only validated when present.
+        && (!('dateStamp' in request.resource.data) || request.resource.data.dateStamp is bool)
         && request.resource.data.startAt is timestamp
         && request.resource.data.endAt is timestamp
         && request.resource.data.coupleNames is string
