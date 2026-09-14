@@ -1,0 +1,236 @@
+/* ============================================================================
+   Film stock dial + live film look (PRD CAMERA-011 / CAMERA-012).
+   Loaded after guest.css, so it uses the same tokens (--s1…--s6, --c-accent,
+   --ink-dim, --shell…) and adds nothing global. No images, no fonts: the grain
+   is one inline SVG turbulence tile, everything else is a gradient.
+   ========================================================================== */
+
+/* --------------------------------------------- live preview layers */
+/* Both sit above the glass and below the stamp (18) / rail (20) / blackout (35),
+   never take pointer events, and are opacity-driven straight from the catalogue
+   (`css.grain` / `css.vignette`). Cheap on purpose: no blur, no filter here. */
+
+.film-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(118% 84% at 50% 48%, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.96) 100%);
+}
+
+.film-grain {
+  position: absolute;
+  inset: -20px;
+  z-index: 6;
+  opacity: 0;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  background-repeat: repeat;
+  background-size: 140px 140px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23g)'/%3E%3C/svg%3E");
+  /* Six jitter positions over 0.72s = one move every ~120ms (CAMERA-011). */
+  animation: film-grain 0.72s steps(1, end) infinite;
+}
+
+.film-grain[hidden],
+.film-vignette[hidden] { display: none; }
+
+@keyframes film-grain {
+  0%    { background-position: 0 0; }
+  16.6% { background-position: -13px 7px; }
+  33.3% { background-position: 9px -11px; }
+  50%   { background-position: -6px -14px; }
+  66.6% { background-position: 14px 5px; }
+  83.3% { background-position: -11px 12px; }
+  100%  { background-position: 0 0; }
+}
+
+/* ------------------------------------------- quartz date back (CAMERA-012) */
+/* Preview only — the capture path draws the video, not the DOM, so this is
+   never baked into the JPEG. The server burns the real stamp (CONTRACTS §11).
+   Sits above the corner bracket so the two never collide. */
+
+.film-stamp {
+  position: absolute;
+  right: var(--s2);
+  bottom: calc(var(--s2) + 26px);
+  z-index: 19;
+  pointer-events: none;
+  font-family: ui-monospace, 'SFMono-Regular', 'DejaVu Sans Mono', Menlo, Consolas, monospace;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  color: #ff9a2e;
+  transform: skewX(-9deg);
+  text-shadow:
+    0 0 4px rgba(255, 154, 46, 0.9),
+    0 0 12px rgba(255, 120, 0, 0.55),
+    0 1px 0 rgba(0, 0, 0, 0.75);
+}
+
+.film-stamp[hidden] { display: none; }
+
+/* ----------------------------------------------- the dial (CAMERA-011) */
+/* A snap-scrolling strip of stock swatches between the frame and the chassis.
+   The CENTRED swatch is the loaded film: scroll it, tap it or arrow to it. */
+
+.film {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 26;
+  padding: var(--s1) 0 2px;
+  background: var(--c-bg);
+}
+
+.film__title {
+  text-align: center;
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  margin-bottom: 2px;
+  color: var(--ink-dim);
+}
+
+/* Loading gate above the centre position — the "this one is loaded" mark. */
+.film__notch {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid var(--c-accent);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.film__dial {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* Half the strip either side so the first and last swatch can reach centre. */
+  padding: 4px calc(50% - 30px) 2px;
+}
+
+.film__dial::-webkit-scrollbar { display: none; }
+
+.film__item {
+  flex: 0 0 60px;
+  width: 60px;
+  scroll-snap-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.film__swatch {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  /* Fixed sample: sky, skin, foliage — the same subject under every stock. */
+  background-image:
+    linear-gradient(158deg, #a9d6ee 0 32%, #e7bd97 32% 68%, #4d6b38 68% 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 1px 2px rgba(0, 0, 0, 0.6);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.film__name {
+  font-size: 0.5625rem;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-align: center;
+  color: var(--ink-dim);
+  opacity: 0.7;
+  transition: opacity 140ms ease;
+}
+
+.film__item[aria-checked='true'] .film__swatch {
+  transform: scale(1.16);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.55),
+    0 0 0 2px var(--c-accent),
+    0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+.film__item[aria-checked='true'] .film__name {
+  color: var(--accent-ink);
+  opacity: 1;
+}
+
+.film__item:focus-visible .film__swatch {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 3px;
+}
+
+/* ------------------------------------------------------- accessibility */
+
+@media (prefers-reduced-motion: reduce) {
+  .film-grain { animation: none !important; }
+  .film__swatch, .film__name { transition: none; }
+}
+
+@media (prefers-contrast: more) {
+  .film-grain { display: none; }
+  .film__name { opacity: 1; color: #fff; }
+  .film-stamp { text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9); }
+}
+
+/* ------------------------------------------------- landscape grip strip */
+/* Same breakpoint as guest.css: the deck becomes a right-hand grip, so the dial
+   becomes a narrow vertical strip beside it and never covers the frame centre. */
+
+@media (orientation: landscape) and (max-height: 560px) {
+  .film {
+    display: flex;
+    flex-direction: column;
+    width: 76px;
+    flex: 0 0 76px;
+    min-height: 0;
+    padding: var(--s1) 0;
+  }
+
+  .film__title { display: none; }
+
+  .film__notch {
+    top: 50%;
+    left: 2px;
+    transform: translateY(-50%);
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 5px solid var(--c-accent);
+    border-right: 0;
+  }
+
+  .film__dial {
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s2);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scroll-snap-type: y mandatory;
+    /* vh, not %: percentage block padding resolves against WIDTH. */
+    padding: calc(50vh - 34px) 0;
+  }
+
+  .film__item { flex: 0 0 auto; width: 68px; }
+  .film__swatch { width: 38px; height: 38px; }
+}

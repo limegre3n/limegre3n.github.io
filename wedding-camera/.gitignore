@@ -1,0 +1,19 @@
+node_modules
+app/dist/
+# local scratch scripts (screenshot/diagnostic harnesses)
+.*.tmp.*
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+storage-debug.log
+pubsub-debug.log
+*.log
+.env
+# app/.env.production holds the Firebase *web* config, which is public by design
+# (it ships inside the built JavaScript) — safe to commit. Real secrets never go here.
+sa.json
+test-results/
+playwright-report/
+wedding-qr.png
+wedding-qr.svg

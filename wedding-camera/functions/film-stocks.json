@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "stocks": [
+    {
+      "id": "clean",
+      "name": "Clean",
+      "css": { "filter": "none", "grain": 0, "vignette": 0 },
+      "recipe": null
+    },
+    {
+      "id": "golden",
+      "name": "Golden Hour",
+      "css": {
+        "filter": "sepia(.24) saturate(1.3) contrast(1.05) brightness(1.05) hue-rotate(-5deg)",
+        "grain": 0.05,
+        "vignette": 0.16
+      },
+      "recipe": {
+        "bw": false,
+        "modulate": { "brightness": 1.06, "saturation": 1.28, "hue": -4 },
+        "tint": [255, 240, 214],
+        "gamma": null,
+        "linear": null,
+        "contrast": 1.06,
+        "lift": 9,
+        "grain": 3.5,
+        "vignette": 0.16
+      }
+    },
+    {
+      "id": "seaside",
+      "name": "Seaside",
+      "css": {
+        "filter": "saturate(1.02) contrast(1.06) brightness(1.04) hue-rotate(10deg)",
+        "grain": 0.04,
+        "vignette": 0.1
+      },
+      "recipe": {
+        "bw": false,
+        "modulate": { "brightness": 1.04, "saturation": 1.02, "hue": 10 },
+        "tint": [236, 252, 247],
+        "gamma": null,
+        "linear": null,
+        "contrast": 1.06,
+        "lift": 14,
+        "grain": 3,
+        "vignette": 0.1
+      }
+    },
+    {
+      "id": "portrait",
+      "name": "Portrait Soft",
+      "css": {
+        "filter": "sepia(.1) saturate(1.04) contrast(.9) brightness(1.06)",
+        "grain": 0.025,
+        "vignette": 0.18
+      },
+      "recipe": {
+        "bw": false,
+        "modulate": { "brightness": 1.03, "saturation": 1.04, "hue": -3 },
+        "tint": [255, 246, 238],
+        "gamma": 1.12,
+        "linear": null,
+        "contrast": 0.9,
+        "lift": 12,
+        "grain": 2,
+        "vignette": 0.18
+      }
+    },
+    {
+      "id": "silver",
+      "name": "Silver",
+      "css": {
+        "filter": "grayscale(1) contrast(1.08) brightness(1.04)",
+        "grain": 0.11,
+        "vignette": 0.22
+      },
+      "recipe": {
+        "bw": true,
+        "modulate": { "brightness": 1, "saturation": 1, "hue": 0 },
+        "tint": null,
+        "gamma": null,
+        "linear": null,
+        "contrast": 1.08,
+        "lift": 16,
+        "grain": 6.5,
+        "vignette": 0.22
+      }
+    },
+    {
+      "id": "faded",
+      "name": "Faded",
+      "css": {
+        "filter": "sepia(.22) saturate(.76) contrast(.86) brightness(1.09) hue-rotate(-8deg)",
+        "grain": 0.07,
+        "vignette": 0.28
+      },
+      "recipe": {
+        "bw": false,
+        "modulate": { "brightness": 1.05, "saturation": 0.72, "hue": -8 },
+        "tint": [255, 234, 238],
+        "gamma": 1.1,
+        "linear": null,
+        "contrast": 0.86,
+        "lift": 26,
+        "grain": 5,
+        "vignette": 0.28
+      }
+    }
+  ]
+}

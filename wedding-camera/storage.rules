@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// Cloud Storage security rules — CONTRACTS.md §3.
+// Objects are never publicly readable or listable (PRIVACY-005): guest uploads are
+// write-once and read only by the admin, or by a PIN-verified gallery viewer once the
+// gallery is released AND the matching photos/{uuid} doc is still 'visible'.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() { return isSignedIn() && request.auth.token.get('admin', false) == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.get('gallery', false) == true; }
+    // The object name IS the photo uuid (no extension) — enforce the shape so the
+    // finalize function's path parser and photos/{uuid} lookups always line up.
+    function isUuid(s) {
+      return s.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+    }
+
+    // Guest photo uploads. Object name is the bare photo UUID (no extension).
+    // These checks are a pre-filter; authoritative validation lives in onUploadFinalize.
+    match /uploads/{uid}/{uuid} {
+      allow write: if isSignedIn() && request.auth.uid == uid
+        && resource == null                              // write-once, no overwrite/delete
+        && isUuid(uuid)
+        && request.resource.size > 0
+        && request.resource.size <= 8 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+      allow delete: if false;
+      allow read: if isAdmin()
+        || (hasGallery()
+            && firestore.get(/databases/(default)/documents/config/event)
+                 .data.galleryReleased == true
+            && firestore.get(/databases/(default)/documents/photos/$(uuid))
+                 .data.status == 'visible');
+    }
+
+    // Developed copies (film stock baked in, optional date stamp) — CONTRACTS §11.
+    // Written ONLY by the develop pipeline (Admin SDK, which bypasses rules); the read
+    // rule is deliberately identical to uploads/ so hiding a photo revokes both the
+    // original and its developed copy in one move.
+    match /developed/{uuid} {
+      allow read: if isAdmin()
+        || (hasGallery()
+            && firestore.get(/databases/(default)/documents/config/event)
+                 .data.galleryReleased == true
+            && firestore.get(/databases/(default)/documents/photos/$(uuid))
+                 .data.status == 'visible');
+      allow write: if false;
+    }
+
+    // Theme assets (hero image, monogram) — set up by admin, shown to everyone signed in.
+    match /theme/{file} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin()
+        && request.resource.size > 0
+        && request.resource.size <= 8 * 1024 * 1024
+        && request.resource.contentType.matches('^image/.*');
+    }
+
+    // ZIP exports, produced by the exportZip function; downloaded via signed URL.
+    match /exports/{file} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

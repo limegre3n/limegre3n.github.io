@@ -1,0 +1,736 @@
+/* ============================================================================
+   Wedding gallery — the album, opened weeks after the day (workstream ④).
+   Light "paper" surfaces so the photographs carry the colour; the couple's
+   palette arrives ONLY as custom properties (CONTRACTS §9):
+     --c-bg  --c-accent  --c-text  --font-stack
+   main.js derives the contrast-safe tokens below from --c-accent, so ANY
+   accent the couple picks still clears WCAG AA wherever it carries text.
+   No images, no webfonts, no libraries — every texture is a gradient.
+   ========================================================================== */
+
+:root {
+  /* Theme fallbacks — overwritten by lib/theme.js from config/event.theme. */
+  --c-bg: #141210;
+  --c-accent: #e8b04b;
+  --c-text: #f5efe6;
+  --font-stack: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+  /* Derived by main.js (fallbacks chosen for the default gold accent). */
+  --on-accent: #14110d;      /* ink ON an accent fill */
+  --accent-fill: #e8b04b;    /* accent, nudged only if the ink would miss AA */
+  --accent-strong: #8a6413;  /* accent nudged until AA on paper */
+  --accent-lift: #f0c169;    /* accent nudged until AA on the cover plate */
+  --accent-fade: rgba(232, 176, 75, 0.3);
+  --accent-wash: rgba(232, 176, 75, 0.09);
+  --cover-a: #3a3128;
+  --cover-b: #0e0c0b;
+
+  /* Album chassis. */
+  --paper: #f6f4f1;
+  --card: #ffffff;
+  --tile: #eceae6;
+  --ink: #191715;
+  --ink-2: #6d6761;
+  --ink-3: #9b948d;
+  --line: rgba(25, 23, 21, 0.12);
+  --shadow-card: 0 1px 2px rgba(25, 23, 21, 0.05), 0 12px 30px -12px rgba(25, 23, 21, 0.22);
+
+  --r-lg: 20px;
+  --r-md: 14px;
+  --r-sm: 10px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-stack);
+  font-size: 16px;
+  line-height: 1.5;
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+body.is-locked { overflow: hidden; }
+
+img { display: block; max-width: 100%; }
+button { font: inherit; color: inherit; }
+svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7;
+      stroke-linecap: round; stroke-linejoin: round; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+#app { max-width: 860px; margin: 0 auto; background: var(--paper); min-height: 100dvh; }
+
+/* ── plain screens (loading / invalid link) ──────────────────────── */
+.screen-plain {
+  min-height: 100dvh; display: grid; place-items: center;
+  padding: 2rem 1.25rem;
+}
+.plain-card { text-align: center; max-width: 22rem; display: grid; gap: 0.6rem; justify-items: center; }
+.plain-card.card { padding: 2.2rem 1.6rem; width: 100%; }
+.plain-title { font-size: 1.3rem; font-weight: 600; letter-spacing: -0.01em; }
+.plain-note { font-size: 0.94rem; color: var(--ink-2); }
+
+.dots { display: flex; gap: 0.4rem; margin-bottom: 0.3rem; }
+.dots i {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--c-accent); opacity: 0.3;
+  animation: dot 1.2s ease-in-out infinite;
+}
+.dots i:nth-child(2) { animation-delay: 0.16s; }
+.dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes dot { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-3px); } }
+
+/* ── album cover (PIN · locked · wall header) ────────────────────── */
+/* Cover screens fill the viewport: the plate takes whatever the card leaves. */
+.cover-screen {
+  min-height: 100dvh; display: flex; flex-direction: column;
+  padding-bottom: calc(1.6rem + env(safe-area-inset-bottom));
+}
+
+.cover {
+  position: relative; overflow: hidden; isolation: isolate;
+  flex: 1 1 auto; min-height: 46dvh;
+  display: flex; align-items: flex-end;
+  background:
+    radial-gradient(120% 90% at 18% 8%, rgba(255, 255, 255, 0.13), transparent 62%),
+    linear-gradient(165deg, var(--cover-a) 0%, var(--cover-b) 100%);
+}
+.cover-wall { flex: none; min-height: 38dvh; }
+/* Stationery hairline + a whisper of grain, so an image-less plate still reads
+   as a printed album cover rather than an empty gradient. */
+.cover::after {
+  content: ''; position: absolute; inset: 13px; pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 3px;
+}
+.cover::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: -1;
+  background: repeating-linear-gradient(
+    52deg, rgba(255, 255, 255, 0.012) 0 1px, rgba(0, 0, 0, 0.016) 1px 3px
+  );
+}
+
+.cover-img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; z-index: -2;
+}
+.cover-img.is-blurred {
+  filter: blur(26px) saturate(1.15);
+  transform: scale(1.25);
+  opacity: 0.7;
+}
+.cover-scrim {
+  position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(
+    to bottom,
+    rgba(10, 9, 8, 0.34) 0%,
+    rgba(10, 9, 8, 0.16) 30%,
+    rgba(10, 9, 8, 0.62) 72%,
+    rgba(10, 9, 8, 0.9) 100%
+  );
+}
+.cover-body {
+  width: 100%; text-align: center; color: #fff;
+  padding: 2.4rem 1.25rem 3rem;
+  padding-top: calc(2.4rem + env(safe-area-inset-top));
+  display: grid; gap: 0.45rem; justify-items: center;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.4);
+}
+.monogram {
+  font-size: 0.95rem; letter-spacing: 0.34em; text-indent: 0.34em;
+  color: var(--accent-lift); text-transform: uppercase;
+}
+.cover-names {
+  font-size: clamp(1.7rem, 7.4vw, 2.15rem); font-weight: 600;
+  letter-spacing: -0.015em; line-height: 1.15;
+}
+.cover-date {
+  font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.82);
+}
+.cover-wall .cover-body { padding-bottom: 1.9rem; }
+.cover-count {
+  margin-top: 0.5rem; font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 999px;
+  padding: 0.3rem 0.8rem; backdrop-filter: blur(6px);
+}
+
+/* ── sheet + card (PIN · locked) ─────────────────────────────────── */
+.sheet { position: relative; margin-top: -2.2rem; padding: 0 1rem; }
+.card {
+  background: var(--card); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  padding: 1.5rem 1.25rem 1.4rem;
+  display: grid; gap: 0.35rem;
+}
+.eyebrow {
+  font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--accent-strong); font-weight: 600;
+}
+.card-title { font-size: 1.18rem; font-weight: 600; letter-spacing: -0.01em; }
+.card-note { font-size: 0.92rem; color: var(--ink-2); }
+.fineprint {
+  text-align: center; font-size: 0.78rem; color: var(--ink-3);
+  padding: 1rem 1.5rem 0; max-width: 24rem; margin: 0 auto;
+}
+
+/* ── PIN field (GALLERY-002) ─────────────────────────────────────── */
+.pin-field { position: relative; margin-top: 1.1rem; }
+.pin-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.4rem; }
+.pin-cell {
+  aspect-ratio: 3 / 4; min-height: 52px;
+  border: 1.5px solid var(--line); border-radius: var(--r-md);
+  background: var(--paper);
+  display: grid; place-items: center;
+  font-size: 1.3rem; font-weight: 600; font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.pin-cell.is-filled { background: var(--card); border-color: var(--ink); }
+.pin-field:focus-within .pin-cell.is-active {
+  border-color: var(--c-accent); background: var(--card);
+  box-shadow: 0 0 0 3px var(--accent-fade);
+}
+.pin-input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0; background: transparent; border-radius: var(--r-md);
+  font-size: 16px; /* keeps iOS from zooming the page on focus */
+  color: transparent; caret-color: transparent;
+  text-align: center; letter-spacing: 0.5em;
+  opacity: 0; /* the cells are the visible field */
+}
+.pin-input:focus { outline: none; }
+.pin-hint {
+  margin-top: 0.55rem; font-size: 0.76rem; letter-spacing: 0.02em; color: var(--ink-3);
+}
+
+/* ── buttons ─────────────────────────────────────────────────────── */
+.btn {
+  min-height: 54px; padding: 0.85rem 1.2rem;
+  border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; font-size: 1rem; font-weight: 600;
+  cursor: pointer; text-align: center;
+}
+.btn-primary {
+  margin-top: 1rem; width: 100%;
+  background: var(--accent-fill); color: var(--on-accent);
+  box-shadow: 0 8px 20px -12px rgba(25, 23, 21, 0.7);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.btn-primary:active { transform: translateY(1px); filter: brightness(0.96); }
+.btn:disabled { opacity: 0.6; cursor: default; }
+:where(button, input):focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+.error { color: #a3311f; font-size: 0.88rem; margin-top: 0.7rem; }
+
+.shake { animation: shake 0.4s ease; }
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(2px); }
+}
+
+/* ── still developing (GALLERY-001) ──────────────────────────────── */
+.developing { display: flex; gap: 0.5rem; margin: 1.1rem 0 0.9rem; }
+.develop-frame {
+  flex: 1; aspect-ratio: 4 / 3; border-radius: var(--r-sm);
+  background:
+    radial-gradient(90% 80% at 32% 26%, var(--accent-fade), transparent 72%),
+    linear-gradient(150deg, #e4e0da, #d4cfc8);
+  animation: develop 3.2s ease-in-out infinite;
+}
+.develop-frame:nth-child(2) { animation-delay: 0.5s; }
+.develop-frame:nth-child(3) { animation-delay: 1s; }
+@keyframes develop {
+  0%, 100% { opacity: 0.4; filter: contrast(0.55) saturate(0.4); }
+  50% { opacity: 1; filter: contrast(1) saturate(1); }
+}
+
+/* ── sticky toolbar ──────────────────────────────────────────────── */
+.toolbar {
+  position: sticky; top: 0; z-index: 20;
+  display: grid; gap: 0.5rem;
+  padding: 0.55rem 0.85rem;
+  background: rgba(246, 244, 241, 0.92);
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  backdrop-filter: saturate(1.4) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.toolbar-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+}
+.toolbar-count {
+  font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.viewtoggle {
+  display: flex; gap: 2px; padding: 3px;
+  background: rgba(25, 23, 21, 0.06); border-radius: 999px;
+}
+.vt-btn {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  min-height: 38px; padding: 0.3rem 0.75rem;
+  border: 0; border-radius: 999px; background: transparent;
+  font-size: 0.78rem; font-weight: 600; color: var(--ink-2);
+  cursor: pointer; transition: background-color 0.15s ease, color 0.15s ease;
+}
+.vt-btn[aria-pressed="true"] {
+  background: var(--card); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(25, 23, 21, 0.16);
+}
+.vt-icon { width: 15px; height: 15px; flex: none; stroke-width: 1.6; }
+
+/* ── toolbar actions: Download all (GALLERY-005) · Select (GALLERY-006) ── */
+.toolbar-actions { gap: 0.5rem; }
+.tool-btn {
+  flex: 1 1 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  min-height: 40px; padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tool-btn > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-btn:active { filter: brightness(0.97); }
+.tool-btn:disabled { opacity: 0.58; cursor: default; }
+.tool-btn[aria-pressed="true"] {
+  background: var(--accent-fill); color: var(--on-accent); border-color: transparent;
+}
+.tool-icon { width: 15px; height: 15px; flex: none; stroke-width: 1.7; }
+.tool-spinner {
+  width: 14px; height: 14px; flex: none; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent-strong);
+  animation: spin 0.9s linear infinite;
+}
+
+/* ── "Your film" strip (GALLERY-008) ─────────────────────────────── */
+/* The emotional centre of the album for the guest who shot it, so it gets a
+   surface of its own: a soft warm card, and inside it a reel that borrows the
+   cover plate (--cover-a/--cover-b, both derived from the couple's accent) with
+   a punched sprocket band top and bottom. Every texture is a gradient — no
+   images, no webfonts. Rendered only when this browser actually shot a frame,
+   so it can never become an empty shelf. Tiles share .shot-frame with the wall:
+   same shimmer, same object-fit crop, same cached signed URL. */
+.myfilm {
+  margin: 0.85rem 0.85rem 0.25rem;
+  padding: 0.85rem 0.7rem 0.7rem;
+  background: linear-gradient(180deg, var(--accent-wash), transparent 62%), var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+.myfilm-head {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.1rem 0.55rem;
+  padding: 0 0.2rem 0.65rem;
+}
+/* Same display treatment as the cover names, in whichever face the couple chose. */
+.myfilm-title {
+  font-family: var(--font-stack);
+  font-size: 1.16rem; font-weight: 600; letter-spacing: -0.015em; line-height: 1.15;
+}
+.myfilm-note {
+  font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+.myfilm-hint {
+  margin-left: auto;
+  font-size: 0.74rem; color: var(--ink-3); white-space: nowrap;
+}
+
+.myfilm-reel {
+  position: relative; isolation: isolate;
+  border-radius: var(--r-md); overflow: hidden;
+  background: linear-gradient(160deg, var(--cover-a) 0%, var(--cover-b) 100%);
+  padding: 13px 0;
+}
+/* the two film edges: light punches let the plate read as perforated stock */
+.myfilm-reel::before, .myfilm-reel::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 13px;
+  z-index: 1; pointer-events: none;
+  background-image: radial-gradient(circle at 50% 50%,
+    rgba(255, 255, 255, 0.34) 0 2.3px, transparent 2.5px);
+  background-size: 15px 13px; background-repeat: repeat-x;
+}
+.myfilm-reel::before { top: 0; }
+.myfilm-reel::after { bottom: 0; }
+
+/* Snap-scrolls, and the next frame is deliberately left half-cut at the right
+   edge so the reel reads as something you can push along. */
+.myfilm-row {
+  display: flex; gap: 12px;
+  overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 0 12px;
+  scroll-snap-type: x mandatory; scroll-padding-left: 12px;
+  scrollbar-width: none;
+}
+.myfilm-row::-webkit-scrollbar { height: 0; }
+.filmshot {
+  flex: 0 0 auto; width: 132px; padding: 0; border: 0;
+  background: transparent; cursor: pointer; scroll-snap-align: start;
+}
+.filmshot:focus-visible { outline: 2px solid var(--accent-lift); outline-offset: 2px; }
+.filmshot .shot-frame {
+  aspect-ratio: 4 / 5;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.filmshot .shot-quote { top: 3px; left: 9px; font-size: 26px; }
+@media (min-width: 560px) {
+  .filmshot { width: 148px; }
+}
+
+/* ── "Photos by" chips (GALLERY-008) ─────────────────────────────── */
+.chips {
+  display: flex; gap: 0.4rem;
+  overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { height: 0; }
+.chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  min-height: 36px; padding: 0.3rem 0.75rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink-2);
+  font-size: 0.82rem; font-weight: 600; white-space: nowrap; cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: transparent; }
+.chip-count { font-size: 0.72rem; font-variant-numeric: tabular-nums; opacity: 0.6; }
+
+/* ── the wall ────────────────────────────────────────────────────── */
+.wall { display: grid; }
+.wall[data-layout="grid"] { grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; }
+.wall[data-layout="roll"] { grid-template-columns: 1fr; gap: 1.1rem; padding: 1.1rem; }
+@media (min-width: 560px) {
+  .wall[data-layout="grid"] { grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 4px; }
+}
+@media (min-width: 820px) {
+  .wall[data-layout="grid"] { grid-template-columns: repeat(5, 1fr); }
+  .wall[data-layout="roll"] { padding: 1.6rem 3.5rem; }
+}
+
+.shot {
+  display: block; width: 100%; padding: 0; border: 0;
+  background: transparent; cursor: pointer; text-align: left;
+}
+.shot:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+.shot-frame {
+  position: relative; overflow: hidden;
+  aspect-ratio: 1 / 1; background: var(--tile);
+  --shim-a: #e9e6e1; --shim-b: #f4f2ef;
+  display: grid; place-items: center;
+}
+/* scattered (not column-aligned) so an unloaded grid reads as a paper mosaic */
+.shot:nth-child(4n + 2) .shot-frame { --shim-a: #e4e0da; --shim-b: #f1eeea; }
+.shot:nth-child(7n + 5) .shot-frame { --shim-a: #eeebe6; --shim-b: #f8f6f3; }
+.shot-frame::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(100deg, var(--shim-a) 18%, var(--shim-b) 34%, var(--shim-a) 52%);
+  background-size: 280% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+.shot-frame.is-loaded::before { display: none; }
+.shot-frame.is-failed::before { animation: none; background: var(--shim-a); }
+@keyframes shimmer { from { background-position: 140% 0; } to { background-position: -140% 0; } }
+
+.shot-frame img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; opacity: 0; transition: opacity 0.35s ease;
+}
+.shot-frame.is-loaded img { opacity: 1; }
+.shot-fallback { position: relative; width: 26px; height: 26px; color: var(--ink-3); opacity: 0.6; }
+/* a late arrival still wins: the icon steps aside when the photo lands */
+.shot-frame.is-loaded .shot-fallback { display: none; }
+
+.wall[data-layout="roll"] .shot-frame {
+  aspect-ratio: var(--ar, 4 / 3);
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 2px rgba(25, 23, 21, 0.06), 0 14px 28px -18px rgba(25, 23, 21, 0.45);
+}
+.shot-meta { display: none; }
+.wall[data-layout="roll"] .shot-meta {
+  display: block; padding: 0.55rem 0.2rem 0;
+  font-size: 0.78rem; color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* ── select mode (GALLERY-006) ───────────────────────────────────── */
+/* The badge only exists while selecting, so the album reads unchanged at rest. */
+.shot-check {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.82); color: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(25, 23, 21, 0.28);
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.shot-check svg { width: 13px; height: 13px; stroke-width: 2.8; }
+.wall:not([data-selecting="true"]) .shot-check { display: none; }
+.wall[data-layout="roll"] .shot-check { top: 10px; right: 10px; width: 28px; height: 28px; }
+.wall[data-layout="roll"] .shot-check svg { width: 16px; height: 16px; }
+
+.wall[data-selecting="true"] .shot-frame::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  border-radius: inherit; background: rgba(25, 23, 21, 0.2);
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.wall[data-selecting="true"] .shot[aria-checked="true"] .shot-frame::after {
+  opacity: 1; box-shadow: inset 0 0 0 3px var(--accent-fill);
+}
+.wall[data-selecting="true"] .shot[aria-checked="true"] .shot-check {
+  background: var(--accent-fill); color: var(--on-accent); transform: scale(1.06);
+}
+
+/* ── a captioned frame (GALLERY-007) ─────────────────────────────── */
+/* Unobtrusive on the wall — just enough for a guest to notice there is a note. */
+.shot-quote {
+  position: absolute; top: 1px; left: 6px; z-index: 2; pointer-events: none;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px; line-height: 1.05;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+}
+.wall[data-layout="roll"] .shot-quote { top: 4px; left: 12px; font-size: 30px; }
+
+/* ── bottom dock: ZIP-ready banner + selection bar ───────────────── */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  pointer-events: none;
+  padding: 0 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
+}
+.dock-inner { max-width: 860px; margin: 0 auto; display: grid; gap: 0.5rem; }
+.ready, .selbar {
+  pointer-events: auto;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-card);
+  padding: 0.7rem 0.75rem;
+  animation: dock-rise 0.22s ease-out both;
+}
+@keyframes dock-rise {
+  from { transform: translateY(18px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+/* note + dismiss share the top row; the call to action takes the full width
+   below it, so the tap target never competes with the × */
+.ready { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.55rem; align-items: center; }
+.ready-text { grid-column: 1; grid-row: 1; min-width: 0; }
+.ready-note { font-size: 0.86rem; font-weight: 600; letter-spacing: -0.005em; }
+.ready-hint { font-size: 0.74rem; color: var(--ink-3); margin-top: 0.1rem; }
+.ready-dismiss {
+  grid-column: 2; grid-row: 1;
+  width: 30px; height: 30px; padding: 7px;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(25, 23, 21, 0.06); color: var(--ink-2);
+}
+.btn-ready {
+  grid-column: 1 / -1; grid-row: 2; margin: 0; min-height: 48px; padding: 0.7rem 1rem;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
+  background: var(--accent-fill); color: var(--on-accent);
+  text-decoration: none; font-size: 0.96rem;
+  box-shadow: 0 8px 20px -14px rgba(25, 23, 21, 0.8);
+}
+.btn-ready:active { filter: brightness(0.96); }
+
+.selbar { display: grid; gap: 0.55rem; }
+.selbar-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.selbar-count {
+  font-size: 0.86rem; font-weight: 600; font-variant-numeric: tabular-nums;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.selbar-link {
+  flex: none; min-height: 32px; padding: 0.25rem 0.2rem;
+  border: 0; background: transparent; cursor: pointer;
+  font-size: 0.82rem; font-weight: 600; color: var(--accent-strong);
+}
+.selbar-actions { display: flex; gap: 0.5rem; }
+.selbar-btn {
+  flex: 1 1 0; min-width: 0; min-height: 48px; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--card); color: var(--ink);
+  font-size: 0.94rem; font-weight: 600; cursor: pointer;
+}
+.selbar-go {
+  flex: 1.5 1 0; background: var(--accent-fill); color: var(--on-accent); border-color: transparent;
+}
+.selbar-btn:disabled { opacity: 0.5; cursor: default; }
+.selbar-btn:active:not(:disabled) { filter: brightness(0.97); }
+
+/* keeps the last row of the roll — and any toast — clear of the dock */
+#app.has-dock .wall-foot { padding-bottom: calc(12rem + env(safe-area-inset-bottom)); }
+#app.has-dock ~ .toasts { bottom: calc(9.5rem + env(safe-area-inset-bottom)); }
+
+.empty {
+  margin: 3rem auto; padding: 0 1.5rem; max-width: 22rem;
+  text-align: center; display: grid; gap: 0.4rem; justify-items: center;
+}
+.empty-icon { width: 34px; height: 34px; color: var(--ink-3); margin-bottom: 0.3rem; }
+.empty-title { font-size: 1.05rem; font-weight: 600; }
+
+.wall-foot {
+  text-align: center; font-size: 0.78rem; color: var(--ink-3);
+  padding: 1.4rem 1rem calc(2rem + env(safe-area-inset-bottom));
+}
+
+/* ── full-screen photo detail (GALLERY-003) ──────────────────────── */
+.lightbox { position: fixed; inset: 0; z-index: 60; background: #000; }
+.lb-dialog { position: absolute; inset: 0; }
+
+.lb-stage { position: absolute; inset: 0; display: grid; place-items: center; }
+.lightbox-img {
+  width: 100%; height: 100%; object-fit: contain;
+  opacity: 0; transition: opacity 0.25s ease;
+}
+.lightbox-img.is-loaded { opacity: 1; }
+.lb-spinner {
+  position: absolute; width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25); border-top-color: rgba(255, 255, 255, 0.85);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.lb-top, .lb-bottom {
+  position: absolute; left: 0; right: 0; z-index: 3;
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.lb-top {
+  top: 0; justify-content: space-between;
+  padding: calc(0.65rem + env(safe-area-inset-top)) 0.75rem 1.6rem;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent);
+}
+.lb-bottom {
+  bottom: 0; justify-content: space-between;
+  padding: 2rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent);
+}
+.lb-counter {
+  padding-left: 0.4rem;
+  font-size: 0.78rem; letter-spacing: 0.14em; font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.82);
+}
+.lb-meta { flex: 1 1 auto; min-width: 0; }
+/* GALLERY-007 — the couple's voice: quiet, italic, marked by an accent rule. */
+.lb-caption {
+  position: relative;
+  max-width: 34rem; margin-bottom: 0.35rem; padding-left: 0.7rem;
+  font-size: 0.95rem; font-style: italic; line-height: 1.4;
+  color: rgba(255, 255, 255, 0.93);
+  overflow-wrap: anywhere;
+}
+.lb-caption::before {
+  content: ''; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
+  width: 2px; border-radius: 2px; background: var(--accent-fill);
+}
+.lb-by { font-size: 0.95rem; font-weight: 600; color: #fff; overflow-wrap: anywhere; }
+.lb-when { font-size: 0.76rem; letter-spacing: 0.06em; color: rgba(255, 255, 255, 0.62); }
+
+.icon-btn {
+  flex: none; width: 42px; height: 42px; padding: 10px;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(255, 255, 255, 0.14); color: #fff;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.lb-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
+  width: 40px; height: 40px; padding: 9px;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.lb-prev { left: 0.6rem; }
+.lb-next { right: 0.6rem; }
+.lb-nav:disabled { opacity: 0; pointer-events: none; }
+
+.btn-save {
+  flex: none; display: inline-flex; align-items: center; gap: 0.45rem;
+  min-height: 44px; padding: 0.6rem 1.05rem; border-radius: 999px;
+  background: var(--accent-fill); color: var(--on-accent); font-size: 0.92rem;
+}
+.btn-save svg { width: 17px; height: 17px; flex: none; }
+.lb-error {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 4; margin: 0; width: max-content; max-width: min(22rem, calc(100% - 2.5rem));
+  text-align: center; font-size: 0.88rem;
+  background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px; padding: 0.6rem 1.1rem;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+
+/* ── toasts ──────────────────────────────────────────────────────── */
+.toasts {
+  position: fixed; z-index: 80; left: 0.75rem; right: 0.75rem;
+  bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  display: grid; gap: 0.4rem; pointer-events: none;
+}
+.toast {
+  margin: 0 auto; max-width: 26rem; width: 100%;
+  background: rgba(25, 23, 21, 0.94); color: #fff;
+  border-radius: var(--r-sm); padding: 0.7rem 0.85rem; font-size: 0.88rem;
+  box-shadow: var(--shadow-card);
+}
+.toast.bad { background: #a3311f; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .shot-frame::before { background: var(--tile); }
+  .develop-frame { opacity: 0.75; }
+  /* no slide-up for the dock (GALLERY-005/006) */
+  .ready, .selbar { animation: none; }
+}
+
+/* ── slideshow PIN sheet (GALLERY-009) ───────────────────────────── */
+/* Asked once per session, and only of a viewer who unlocked on a remembered
+   claim: the PIN is never stored, so the album cannot put it on a TV unless
+   somebody types it. Sits on the paper surface like every other card. */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  display: grid; place-items: center;
+  padding: 1.25rem;
+  background: rgba(25, 23, 21, 0.55);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.sheet-card { position: relative; width: 100%; max-width: 22rem; }
+.sheet-close {
+  position: absolute; top: 0.5rem; right: 0.5rem;
+  width: 36px; height: 36px; padding: 9px;
+  background: transparent; color: var(--ink-2);
+}
+.sheet-input {
+  margin-top: 0.9rem; width: 100%; min-height: 54px;
+  padding: 0.7rem 0.9rem;
+  border: 1.5px solid var(--line); border-radius: var(--r-md);
+  background: var(--paper); color: var(--ink);
+  font: inherit; font-size: 1.35rem; font-weight: 600;
+  letter-spacing: 0.28em; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sheet-input::placeholder {
+  font-size: 0.9rem; font-weight: 400; letter-spacing: 0.02em; color: var(--ink-3);
+}
+.sheet-input:focus-visible {
+  outline: none; border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--accent-fade);
+}
+.btn-plain {
+  margin-top: 0.15rem; width: 100%; min-height: 46px;
+  color: var(--ink-2); font-size: 0.92rem;
+}

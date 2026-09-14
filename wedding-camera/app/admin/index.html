@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Wedding Camera — Admin</title>
+  <link rel="stylesheet" href="/src/admin/admin.css">
+</head>
+<body>
+  <div id="app" data-state="loading" aria-live="polite">
+
+    <!-- ── loading ─────────────────────────────────────────────── -->
+    <section class="screen center" data-view="loading">
+      <p class="film-label">Darkroom</p>
+      <p class="muted" id="loading-note">Opening the darkroom…</p>
+    </section>
+
+    <!-- ── login (ADMIN-001) ───────────────────────────────────── -->
+    <section class="screen center" data-view="login" hidden>
+      <p class="film-label">Darkroom</p>
+      <h1 class="title">Host sign-in</h1>
+      <form class="card form" id="login-form" novalidate>
+        <label class="field">
+          <span class="field-label">Email</span>
+          <input id="login-email" type="email" name="email" autocomplete="username"
+                 inputmode="email" autocapitalize="off" spellcheck="false" required>
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="login-password" type="password" name="password"
+                 autocomplete="current-password" required>
+        </label>
+        <button class="btn btn-primary" type="submit" id="login-submit">Sign in</button>
+        <p class="error" id="login-error" role="alert" hidden></p>
+      </form>
+      <p class="muted fine">Host account only. Everything here is audited.</p>
+    </section>
+
+    <!-- ── unauthorized ────────────────────────────────────────── -->
+    <section class="screen center" data-view="unauthorized" hidden>
+      <p class="film-label">Darkroom</p>
+      <h1 class="title">Not authorized</h1>
+      <p class="muted">That account is not the host account, so you have been signed out.</p>
+      <button class="btn" type="button" id="back-to-login">Back to sign-in</button>
+    </section>
+
+    <!-- ── main ────────────────────────────────────────────────── -->
+    <section class="screen" data-view="main" hidden>
+      <header class="topbar">
+        <div class="topbar-id">
+          <span class="film-label">Darkroom</span>
+          <span class="couple" data-theme-couple-names id="couple-names"></span>
+        </div>
+        <button class="btn btn-quiet btn-small" type="button" id="sign-out">Sign out</button>
+      </header>
+
+      <!-- controls bar: ADMIN-004 / ADMIN-006 / ADMIN-007 -->
+      <div class="controls" role="group" aria-label="Event controls">
+        <div class="status-row">
+          <span class="pill" id="pause-pill">Uploads —</span>
+          <span class="pill" id="release-pill">Gallery —</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn" type="button" id="pause-btn" disabled>Pause uploads</button>
+          <button class="btn" type="button" id="release-btn" disabled>Release gallery</button>
+          <button class="btn btn-primary" type="button" id="zip-btn">Download ZIP</button>
+          <!-- ADMIN-010: the visible photos on the venue TV, with the camera QR -->
+          <button class="btn" type="button" id="live-btn" disabled>Live wall</button>
+        </div>
+        <!-- ADMIN-006: the couple's archival copy — untouched originals -->
+        <div class="opt-row">
+          <label class="opt" for="zip-originals">
+            <input type="checkbox" id="zip-originals">
+            <span>Originals (no film look, no stamp)</span>
+          </label>
+        </div>
+
+        <!-- ADMIN-011: date stamp + re-develop every photo (CONTRACTS §11) -->
+        <div class="develop-row">
+          <label class="opt" for="stamp-toggle">
+            <input type="checkbox" id="stamp-toggle" disabled>
+            <span>90s date stamp</span>
+          </label>
+          <button class="btn" type="button" id="redevelop-btn"
+                  aria-describedby="redevelop-note">Redevelop all photos</button>
+          <p class="fine muted recover-note" id="redevelop-note">Re-applies each photo’s film stock and the date-stamp setting. Originals are never changed.</p>
+        </div>
+
+        <!-- UPLOAD-009: manual reconciliation sweep (CONTRACTS §5 reconcileNow) -->
+        <div class="recover-row">
+          <button class="btn" type="button" id="reconcile-btn"
+                  aria-describedby="reconcile-note">Deliver pending photos now</button>
+          <p class="fine muted recover-note" id="reconcile-note">Photos normally arrive automatically; use this if something looks stuck.</p>
+        </div>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <button class="tab" type="button" role="tab" id="tab-photos"
+                aria-selected="true" aria-controls="panel-photos">
+          Photos <span class="tab-count" id="photo-count-tab"></span>
+        </button>
+        <button class="tab" type="button" role="tab" id="tab-devices"
+                aria-selected="false" aria-controls="panel-devices">
+          Guests <span class="tab-count" id="device-count-tab"></span>
+        </button>
+      </nav>
+
+      <!-- ADMIN-002 / ADMIN-003 -->
+      <div class="panel" id="panel-photos" role="tabpanel" aria-labelledby="tab-photos">
+        <p class="panel-note" id="photo-summary">Loading the contact sheet…</p>
+        <p class="panel-note fine muted">Tap a frame to hide or unhide it. Hidden frames never reach the gallery.</p>
+        <div class="photo-grid" id="photo-grid"></div>
+        <p class="empty" id="photo-empty" hidden>No photos yet — they will appear here the moment they land.</p>
+      </div>
+
+      <!-- ADMIN-005 -->
+      <div class="panel" id="panel-devices" role="tabpanel" aria-labelledby="tab-devices" hidden>
+        <p class="panel-note" id="device-summary">Loading guests…</p>
+        <div class="device-list" id="device-list"></div>
+        <p class="empty" id="device-empty" hidden>No guest devices yet.</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- confirm modal (pause / release) -->
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+         aria-describedby="modal-body">
+      <h2 class="modal-title" id="modal-title"></h2>
+      <p class="modal-body" id="modal-body"></p>
+      <div class="modal-actions">
+        <button class="btn btn-quiet" type="button" id="modal-cancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="modal-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <script type="module" src="/src/admin/main.js"></script>
+</body>
+</html>

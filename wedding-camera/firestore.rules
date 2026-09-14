@@ -1,0 +1,175 @@
+rules_version = '2';
+
+// Firestore security rules — CONTRACTS.md §2 is the authority for every shape below.
+// Principles:
+//   * clients never write quota, photo, result, counter or pinAttempt state;
+//   * guests are write-limited to their own devices/{uid} doc (create once + lastSeenAt);
+//   * everything not explicitly allowed is denied by the trailing catch-all.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() { return isSignedIn() && request.auth.token.get('admin', false) == true; }
+    function hasGallery() { return isSignedIn() && request.auth.token.get('gallery', false) == true; }
+    function eventCfg() {
+      return get(/databases/$(database)/documents/config/event).data;
+    }
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    function isHexColor(v) {
+      return v is string && v.matches('^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$');
+    }
+    // D19: theming is structured data only. Colours land in CSS custom properties and
+    // the font name in a font-stack, so both are validated here — never free text.
+    function themeOk(t) {
+      return t is map
+        && t.font in ['system', 'serif', 'mono', 'rounded']
+        && t.colors is map
+        && isHexColor(t.colors.bg) && isHexColor(t.colors.accent) && isHexColor(t.colors.text)
+        && t.welcomeText is string && t.welcomeText.size() <= 500
+        && t.consentText is string && t.consentText.size() <= 500
+        && t.monogramText is string && t.monogramText.size() <= 16
+        && (t.heroImagePath == null
+            || (t.heroImagePath is string && t.heroImagePath.matches('^theme/[^/]{1,200}$')));
+    }
+
+    match /config/event {
+      allow read: if isSignedIn();
+      // Admin scope is PRD D13: pause/resume, release, plus display copy/theme.
+      // `slug` (secret link) and `defaultSnaps` (drives the quota granted at device
+      // create) stay console-only so a hijacked admin session cannot re-point the
+      // event or mint unlimited snaps.
+      allow update: if isAdmin()
+        && changed().hasOnly(['paused', 'galleryReleased', 'dateStamp', 'theme',
+                              'coupleNames', 'eventDateText', 'startAt', 'endAt'])
+        && request.resource.data.slug == resource.data.slug
+        && request.resource.data.defaultSnaps == resource.data.defaultSnaps
+        && request.resource.data.paused is bool
+        && request.resource.data.galleryReleased is bool
+        // CONTRACTS §11: the couple's switch for the 90s date stamp on developed copies.
+        // dateStamp arrived after launch: an event doc created before it exists must
+        // keep accepting pause/release updates, so it is only validated when present.
+        && (!('dateStamp' in request.resource.data) || request.resource.data.dateStamp is bool)
+        && request.resource.data.startAt is timestamp
+        && request.resource.data.endAt is timestamp
+        && request.resource.data.coupleNames is string
+        && request.resource.data.coupleNames.size() <= 200
+        && request.resource.data.eventDateText is string
+        && request.resource.data.eventDateText.size() <= 200
+        && themeOk(request.resource.data.theme);
+      allow create, delete: if false;
+    }
+
+    // PIN hash/salt, event cap — server-side only (Admin SDK bypasses rules).
+    match /config/private {
+      allow read, write: if false;
+    }
+
+    // Cached gallery-ZIP metadata written by `exportGalleryZip` (Admin SDK). It names a
+    // storage object under exports/, which no client may read — so the doc itself is
+    // server-only too, for admins as much as for gallery viewers.
+    match /config/galleryExport {
+      allow read, write: if false;
+    }
+
+    match /devices/{uid} {
+      allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      // Joining is window-gated, uploading is NOT (CONTRACTS §5/§6): this is where the
+      // leaked-QR abuse control lives. A device can only be minted while the event is
+      // open, so the finalize function can safely keep accepting film from an EXISTING
+      // device for days afterwards instead of destroying late uploads.
+      allow create: if isSignedIn() && request.auth.uid == uid
+        // Window gate fails OPEN if the console entry is missing or mistyped (e.g. a string):
+        // a config typo must never lock every guest out on the day.
+        && (!(eventCfg().startAt is timestamp) || request.time >= eventCfg().startAt)
+        && (!(eventCfg().endAt is timestamp) || request.time <= eventCfg().endAt)
+        && request.resource.data.keys().hasOnly(
+             ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
+        && request.resource.data.keys().hasAll(
+             ['nickname', 'snapsRemaining', 'snapsGranted', 'createdAt', 'lastSeenAt', 'consentShownAt'])
+        && request.resource.data.nickname is string
+        && request.resource.data.nickname.size() >= 1
+        && request.resource.data.nickname.size() <= 30
+        && request.resource.data.snapsRemaining == eventCfg().defaultSnaps
+        && request.resource.data.snapsGranted == 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.lastSeenAt is timestamp
+        && request.resource.data.consentShownAt is timestamp;
+      // Guests may only touch lastSeenAt. Quota changes: admin (grant) or functions.
+      allow update: if (isSignedIn() && request.auth.uid == uid
+            && changed().hasOnly(['lastSeenAt'])
+            && request.resource.data.lastSeenAt is timestamp)
+        || (isAdmin()
+            && changed().hasOnly(['snapsRemaining', 'snapsGranted'])
+            && request.resource.data.snapsRemaining is number
+            && request.resource.data.snapsGranted is number
+            && request.resource.data.snapsRemaining >= 0
+            // A grant only ever adds film (ADMIN-005); it never rewrites history.
+            && request.resource.data.snapsGranted >= resource.data.snapsGranted);
+      allow delete: if false;
+    }
+
+    // Created exclusively by the finalize function (Admin SDK).
+    match /photos/{uuid} {
+      allow get, list: if isAdmin()
+        || (hasGallery() && eventCfg().galleryReleased == true
+            && resource.data.status == 'visible');
+      // GALLERY-007: the couple may also caption a photo. `caption` is optional — an
+      // absent field and '' both mean "no caption", and removing the key is a valid
+      // clear — so it is only validated when the request actually carries it.
+      allow update: if isAdmin()
+        && changed().hasOnly(['status', 'rotation', 'caption'])
+        && request.resource.data.status in ['visible', 'hidden']
+        && request.resource.data.rotation in [0, 90, 180, 270]
+        && (!('caption' in request.resource.data)
+            || (request.resource.data.caption is string
+                && request.resource.data.caption.size() <= 200));
+      allow create, delete: if false;
+    }
+
+    // Upload outcomes — the client's confirmation signal. Clients subscribe BEFORE
+    // the finalize function writes the doc, so a read of a not-yet-existing doc must
+    // be allowed (resource == null). Safe: uuids are client-generated 128-bit secrets.
+    match /results/{uuid} {
+      allow get: if isSignedIn()
+        && (resource == null || resource.data.deviceUid == request.auth.uid || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /counters/{doc} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /audit/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['action', 'target', 'actorUid', 'at'])
+        && request.resource.data.keys().hasAll(['action', 'actorUid', 'at'])
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.action in
+             ['hide', 'unhide', 'rotate', 'caption', 'pause', 'resume', 'grant', 'release', 'export']
+        && (request.resource.data.get('target', null) == null
+            || (request.resource.data.target is string
+                && request.resource.data.target.size() <= 200))
+        && request.resource.data.at is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /pinAttempts/{uid} {
+      allow read, write: if false;
+    }
+
+    // Per-uid rate limiting for exportGalleryZip. Function-managed; no client access
+    // (the trailing catch-all would deny it anyway — this is explicit for the reader).
+    match /galleryExportAttempts/{uid} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

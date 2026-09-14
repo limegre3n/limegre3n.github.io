@@ -1,0 +1,267 @@
+/* ============================================================================
+   Step-less lens zoom slider (CAMERA-006 / CAMERA-010).
+   Imported by zoom-ui.js. Uses ONLY the guest tokens already defined in
+   guest.css (--s1…--s6, --r-sm, --t-sm, --ink, --accent-ink, --c-accent,
+   --recess, --hair, --shell-edge) so it stays part of the same chassis.
+
+   No rule here touches anything outside `.deck__zoom` / `.zoomctl` /
+   `.zoomdiag`, so it can load in either order relative to guest.css.
+   ========================================================================== */
+
+/* Its own full-width row in the deck: under the counter, above the shutter —
+   never overlapping the shutter, always inside one-handed reach. */
+.deck__zoom {
+  display: block;
+  width: 100%;
+}
+
+.zoomctl {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+}
+
+/* 52px tall: the whole box is the hit area, well past the 44px minimum. */
+.zoomctl__track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 52px;
+  min-width: 0;
+  touch-action: none;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  outline-offset: 2px;
+}
+
+.zoomctl__track:focus-visible {
+  outline: 2px solid var(--accent-ink);
+}
+
+/* Inset so the thumb at either end, and the end tick labels, stay on-chassis. */
+.zoomctl__rail {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  bottom: 0;
+}
+
+/* The rail itself — a recessed groove milled into the chassis. */
+.zoomctl__rail::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 14px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--recess);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8), 0 1px 0 var(--shell-hi);
+}
+
+/* Travelled part of the groove, tinted with the couple's accent. */
+.zoomctl__fill {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  height: 4px;
+  width: var(--pos, 0%);
+  border-radius: 2px;
+  background: var(--accent-ink);
+  opacity: 0.55;
+}
+
+/* Beyond the last real lens it is pure crop: hatch it so the guest can SEE
+   where the picture starts getting softer. */
+.zoomctl__digital {
+  position: absolute;
+  left: var(--from, 100%);
+  right: 0;
+  top: 11px;
+  height: 10px;
+  border-radius: 2px;
+  opacity: 0.55;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.22) 0 2px,
+    rgba(0, 0, 0, 0) 2px 5px
+  );
+}
+
+.zoomctl__digital[hidden] { display: none; }
+
+.zoomctl__ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.zoomctl__tick {
+  position: absolute;
+  left: var(--pos, 0%);
+  top: 9px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* A real lens gets a bolder mark than a digital stop — the tick tells the
+   guest which magnifications the hardware actually has glass for. */
+.zoomctl__mark {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.75;
+}
+
+.zoomctl__label {
+  margin-top: 8px;
+  font-size: 0.6875rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.zoomctl__tick--digital .zoomctl__mark { width: 1px; height: 9px; opacity: 0.4; }
+.zoomctl__tick--digital .zoomctl__label { opacity: 0.55; }
+
+.zoomctl__tick--active .zoomctl__mark { background: var(--accent-ink); opacity: 1; }
+.zoomctl__tick--active .zoomctl__label { color: var(--accent-ink); }
+
+.zoomctl__thumb {
+  position: absolute;
+  left: var(--pos, 0%);
+  top: 16px;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: var(--c-accent);
+  background-image:
+    radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 60%),
+    radial-gradient(circle at 50% 76%, rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0) 62%);
+  box-shadow:
+    0 0 0 3px rgba(0, 0, 0, 0.45),
+    0 2px 0 var(--shell-edge),
+    inset 0 1px 2px rgba(255, 255, 255, 0.5);
+  transition: transform 90ms ease;
+}
+
+.zoomctl__track.is-dragging .zoomctl__thumb { transform: translate(-50%, -50%) scale(1.12); }
+
+.zoomctl__readout {
+  flex: 0 0 auto;
+  min-width: 3.25rem;
+  text-align: right;
+  font-size: var(--t-md);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+}
+
+.zoomctl--zoomed .zoomctl__readout { color: var(--accent-ink); }
+
+/* ------------------------------------------------- landscape grip strip */
+/* Matches the grip-strip breakpoint in guest.css: the deck becomes a narrow
+   right-hand column, so the slider goes full-width of that column and drops
+   BELOW the shutter group (order: 2) where the thumb already rests. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .deck > .deck__bar { order: 0; }
+  .deck > .deck__row { order: 1; }
+  .deck > .deck__zoom { order: 2; }
+
+  .zoomctl {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .zoomctl__track { width: 100%; height: 40px; }
+  .zoomctl__rail { left: 11px; right: 11px; }
+  .zoomctl__rail::before,
+  .zoomctl__fill { top: 10px; }
+  .zoomctl__digital { top: 7px; }
+  .zoomctl__tick { top: 5px; }
+  .zoomctl__mark { height: 12px; }
+  .zoomctl__tick--digital .zoomctl__mark { height: 8px; }
+  .zoomctl__label { margin-top: 6px; font-size: 0.625rem; }
+  .zoomctl__thumb { top: 12px; width: 18px; height: 18px; }
+
+  .zoomctl__readout {
+    min-width: 0;
+    text-align: center;
+    font-size: var(--t-sm);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zoomctl__thumb { transition: none; }
+}
+
+@media (prefers-contrast: more) {
+  .zoomctl__label { color: var(--ink); }
+  .zoomctl__digital { opacity: 0.9; }
+}
+
+/* -------------------------------------------------------- ?diag=1 sheet */
+/* Text-only bottom sheet the couple screenshots so we can tune the ladder for
+   the handsets that actually show up on the day (CAMERA-010). */
+.zoomdiag {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  max-height: 58vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 7, 6, 0.96);
+  border-top: 1px solid var(--c-accent);
+  padding: var(--s1) var(--s2) calc(var(--pad-bot) + var(--s1));
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.zoomdiag__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding-bottom: var(--s1);
+}
+
+.zoomdiag__title {
+  flex: 1 1 auto;
+  font-size: var(--t-sm);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.zoomdiag__btn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 var(--s2);
+  border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  color: var(--ink);
+  background-color: #1b1714;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+.zoomdiag__body {
+  flex: 1 1 auto;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--ink);
+}

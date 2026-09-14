@@ -1,0 +1,213 @@
+/* ============================================================================
+   Slideshow / TV mode — shared by the gallery (GALLERY-009) and the darkroom's
+   live wall (ADMIN-010). One stylesheet, imported by lib/slideshow.js, so both
+   surfaces get exactly the same screen on the venue TV.
+
+   Colour comes from whichever host page loaded it: the gallery derives
+   --accent-fill / --on-accent from the couple's palette, the admin page has
+   --accent / --accent-ink. Everything below reads those through one local
+   bridge token, so no colour is ever hardcoded except the black stage itself
+   and the white QR card (a QR code has to be dark-on-white to scan).
+   ========================================================================== */
+
+.tv {
+  /* theme bridge: gallery tokens first, admin tokens next, then a safe default */
+  --tv-accent: var(--accent-fill, var(--c-accent, var(--accent, #e8b04b)));
+  --tv-ink: #ffffff;
+  --tv-ink-2: rgba(255, 255, 255, 0.68);
+  --tv-ink-3: rgba(255, 255, 255, 0.46);
+  --tv-card: #ffffff;
+  --tv-card-ink: #111111;
+  --tv-card-ink-2: #6d6761;
+  --tv-fade-ms: 900ms;
+  --tv-kb-ms: 7900ms;
+  --tv-mono: ui-monospace, 'SFMono-Regular', 'Courier New', monospace;
+
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  overflow: hidden;
+  background: #000;
+  color: var(--tv-ink);
+  font-family: var(--font-stack, var(--font, -apple-system, 'Segoe UI', Roboto, sans-serif));
+  -webkit-font-smoothing: antialiased;
+  touch-action: manipulation;
+}
+.tv *,
+.tv *::before,
+.tv *::after { box-sizing: border-box; margin: 0; padding: 0; }
+.tv [hidden] { display: none !important; }
+.tv svg {
+  width: 100%; height: 100%; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.tv[data-controls='off'] { cursor: none; }
+
+/* ── the stage: two crossfading layers ───────────────────────────── */
+.tv-stage { position: absolute; inset: 0; }
+
+.tv-layer {
+  position: absolute; inset: 0;
+  opacity: 0;
+  transition: opacity var(--tv-fade-ms) ease-in-out;
+}
+.tv-layer.is-on { opacity: 1; }
+
+/* A blurred, darkened copy of the same frame fills the screen behind the
+   photo, so a portrait frame on a landscape TV looks deliberate. */
+.tv-blur {
+  position: absolute; inset: -5%;
+  background-position: center;
+  background-size: cover;
+  filter: blur(38px) brightness(0.42) saturate(1.15);
+  transform: scale(1.1);
+}
+
+.tv-photo {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  will-change: transform;
+}
+
+/* Slow Ken Burns, alternating direction frame to frame. */
+.tv-layer[data-kb='a'] .tv-photo { animation: tv-kb-a var(--tv-kb-ms) linear both; }
+.tv-layer[data-kb='b'] .tv-photo { animation: tv-kb-b var(--tv-kb-ms) linear both; }
+
+@keyframes tv-kb-a {
+  from { transform: scale(1) translate3d(0, 0, 0); }
+  to   { transform: scale(1.06) translate3d(-1.1%, -0.9%, 0); }
+}
+@keyframes tv-kb-b {
+  from { transform: scale(1) translate3d(0, 0, 0); }
+  to   { transform: scale(1.06) translate3d(1.1%, 0.9%, 0); }
+}
+
+/* Plain crossfade, no drift, when the viewer asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .tv-layer[data-kb] .tv-photo { animation: none; }
+}
+
+/* ── scrim + the frame's own words (bottom-left) ─────────────────── */
+.tv-scrim {
+  position: absolute; inset: auto 0 0 0; height: 46%;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0.32) 42%, transparent);
+}
+
+.tv-meta {
+  position: absolute;
+  left: clamp(1rem, 3.4vw, 3.2rem);
+  bottom: clamp(0.9rem, 3.4vh, 2.6rem);
+  max-width: min(52ch, 56vw);
+  display: grid; gap: 0.25rem;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.6);
+}
+/* The couple's voice, same italic + accent rule as the lightbox (GALLERY-007). */
+.tv-caption {
+  position: relative;
+  padding-left: 0.8rem;
+  font-style: italic;
+  font-size: clamp(1rem, 1.9vw, 1.6rem);
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.95);
+  overflow-wrap: anywhere;
+}
+.tv-caption::before {
+  content: ''; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
+  width: 3px; border-radius: 3px; background: var(--tv-accent);
+}
+.tv-by {
+  font-size: clamp(0.82rem, 1.2vw, 1.05rem);
+  font-weight: 600;
+  color: var(--tv-ink);
+  overflow-wrap: anywhere;
+}
+
+/* ── QR card (bottom-right) ──────────────────────────────────────── */
+.tv-card {
+  position: absolute;
+  right: clamp(1rem, 3.4vw, 3.2rem);
+  bottom: clamp(0.9rem, 3.4vh, 2.6rem);
+  display: grid; justify-items: center; gap: 0.45rem;
+  padding: clamp(0.6rem, 1.1vw, 1rem);
+  border-radius: 16px;
+  border-top: 4px solid var(--tv-accent);
+  background: var(--tv-card);
+  color: var(--tv-card-ink);
+  box-shadow: 0 22px 55px -14px rgba(0, 0, 0, 0.8);
+}
+.tv-qr { display: block; border-radius: 4px; }
+.tv-qr-label {
+  max-width: 22ch; text-align: center;
+  font-size: clamp(0.72rem, 1.05vw, 0.95rem); font-weight: 600;
+  color: #2a2724;
+}
+.tv-pin { display: flex; align-items: baseline; gap: 0.5rem; }
+.tv-pin-word {
+  font-size: 0.64rem; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--tv-card-ink-2);
+}
+.tv-pin-digits {
+  font-family: var(--tv-mono);
+  font-size: clamp(1.5rem, 3.1vw, 2.4rem);
+  font-weight: 700; letter-spacing: 0.14em;
+  color: var(--tv-card-ink);
+}
+
+/* ── controls (top centre, fade away when idle) ──────────────────── */
+.tv-controls {
+  position: absolute;
+  top: clamp(0.7rem, 2.4vh, 1.6rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 0.3rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.32rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(16, 15, 14, 0.62);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.tv[data-controls='on'] .tv-controls { opacity: 1; pointer-events: auto; }
+
+.tv-btn {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem;
+  min-width: 42px; min-height: 42px; padding: 0 0.55rem;
+  border: 0; border-radius: 999px;
+  background: transparent; color: var(--tv-ink);
+  font: inherit; font-size: 0.85rem; font-weight: 600;
+  cursor: pointer;
+}
+.tv-btn svg { width: 19px; height: 19px; flex: none; }
+.tv-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.tv-btn[aria-pressed='true'] { background: var(--tv-accent); color: var(--on-accent, var(--accent-ink, #14110d)); }
+.tv-btn:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 2px; }
+.tv-exit { padding: 0 0.85rem; background: rgba(255, 255, 255, 0.12); }
+
+.tv-count {
+  padding: 0 0.55rem;
+  font-family: var(--tv-mono); font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--tv-ink-2);
+  white-space: nowrap;
+}
+
+/* Quiet notice when a frame refuses to load — never a raw error. */
+.tv-note {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  max-width: 24rem; text-align: center;
+  font-size: 0.95rem; color: var(--tv-ink-2);
+}
+
+/* Phone in landscape: the card shrinks but the words stay readable. */
+@media (max-height: 460px) {
+  .tv-meta { max-width: 52vw; bottom: 0.7rem; }
+  .tv-card { gap: 0.3rem; padding: 0.5rem; border-radius: 12px; bottom: 0.7rem; }
+  .tv-controls { top: 0.5rem; }
+}

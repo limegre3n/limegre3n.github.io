@@ -1,0 +1,319 @@
+/* Admin (host darkroom) — workstream ④. Phone-first, calm, paper-and-ink with a
+   film-lab nod. Single stylesheet, no external assets. */
+
+:root {
+  --paper: #f4efe6;
+  --paper-2: #fbf8f2;
+  --ink: #22201d;
+  --ink-2: #6d675e;
+  --line: #ddd4c5;
+  --accent: #b4632a;      /* film-lab orange, used sparingly */
+  --accent-ink: #fffaf3;
+  --danger: #a32d22;
+  --ok: #3f6b45;
+  --radius: 12px;
+  --font: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono: 'SFMono-Regular', ui-monospace, 'Courier New', monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #171614;
+    --paper-2: #211f1c;
+    --ink: #f2ece2;
+    --ink-2: #a49c90;
+    --line: #35322d;
+    --accent: #e0913f;
+    --accent-ink: #1b1916;
+    --danger: #e2705f;
+    --ok: #7fb587;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  line-height: 1.45;
+  min-height: 100dvh;
+}
+img { max-width: 100%; display: block; }
+button { font: inherit; color: inherit; }
+
+#app { max-width: 720px; margin: 0 auto; }
+.screen { padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom)); }
+.screen.center {
+  min-height: 100dvh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 0.85rem; text-align: center;
+}
+
+.film-label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.title { font-size: 1.5rem; font-weight: 650; letter-spacing: -0.01em; }
+.muted { color: var(--ink-2); }
+.fine { font-size: 0.8rem; }
+
+/* ── forms ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.form { width: 100%; max-width: 22rem; display: flex; flex-direction: column; gap: 0.8rem; text-align: left; }
+.field { display: flex; flex-direction: column; gap: 0.3rem; }
+.field-label {
+  font-family: var(--mono); font-size: 0.72rem;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2);
+}
+.field input {
+  font: inherit; font-size: 1.05rem;
+  padding: 0.75rem 0.8rem;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.btn {
+  min-height: 48px;
+  padding: 0.6rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-2);
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-quiet { background: transparent; }
+.btn-small { min-height: 38px; padding: 0.35rem 0.7rem; font-size: 0.85rem; }
+.btn-danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.error { color: var(--danger); font-size: 0.9rem; }
+
+/* ── main chrome ───────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.25rem 0 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+.topbar-id { display: flex; flex-direction: column; gap: 0.1rem; text-align: left; }
+.couple { font-weight: 650; }
+
+.controls { padding: 0.9rem 0; border-bottom: 1px solid var(--line); display: grid; gap: 0.7rem; }
+.status-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.pill {
+  font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 0.25rem 0.6rem; color: var(--ink-2);
+}
+.pill.on { color: var(--ok); border-color: currentColor; }
+.pill.warn { color: var(--danger); border-color: currentColor; }
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+/* ADMIN-006 / ADMIN-010: the two whole-event actions get a full row on a phone. */
+.btn-row #zip-btn,
+.btn-row #live-btn { grid-column: 1 / -1; }
+@media (min-width: 520px) {
+  .btn-row { grid-template-columns: repeat(4, 1fr); }
+  .btn-row #zip-btn,
+  .btn-row #live-btn { grid-column: auto; }
+}
+
+/* ADMIN-006 / ADMIN-011: export option + film-development row.
+   Both stay one readable column on a phone and spread out from 520px up. */
+.opt-row { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; }
+.opt {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  min-height: 32px; font-size: 0.88rem; cursor: pointer;
+}
+.opt input {
+  width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer;
+}
+.opt input:disabled { cursor: default; opacity: 0.5; }
+.develop-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.75rem; }
+.develop-row .btn { flex: 0 0 auto; }
+#redevelop-note { flex: 1 1 15rem; }
+
+/* recovery sweep (UPLOAD-009): quiet, sits under the pause/release row */
+.recover-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.75rem; }
+.recover-row .btn { flex: 0 0 auto; }
+.recover-note { flex: 1 1 15rem; min-width: 0; margin: 0; text-align: left; }
+
+.tabs { display: flex; gap: 0.4rem; padding: 0.8rem 0 0.2rem; }
+.tab {
+  flex: 1; min-height: 44px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; font-weight: 600; font-size: 0.92rem; cursor: pointer;
+}
+.tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.tab-count { font-family: var(--mono); font-size: 0.78rem; opacity: 0.75; }
+
+.panel { padding: 0.6rem 0 0; }
+.panel-note { font-size: 0.9rem; margin-bottom: 0.35rem; }
+.empty {
+  margin: 1.5rem 0; padding: 1.5rem 1rem; text-align: center;
+  color: var(--ink-2); border: 1px dashed var(--line); border-radius: var(--radius);
+}
+
+/* ── contact sheet (ADMIN-002/003) ─────────────────────────────── */
+.photo-grid {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.55rem;
+}
+.photo-card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-2);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.frame {
+  position: relative;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  display: flex; flex-direction: column;
+}
+.frame:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.frame-thumb {
+  aspect-ratio: 1 / 1; width: 100%;
+  background: #0d0c0b center/cover no-repeat;
+  display: grid; place-items: center;
+  color: #7d766c; font-family: var(--mono); font-size: 0.7rem;
+}
+.frame-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.frame-meta { padding: 0.45rem 0.55rem 0.55rem; display: grid; gap: 0.1rem; }
+.frame-nick { font-size: 0.88rem; font-weight: 600; overflow-wrap: anywhere; }
+.frame-time { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-2); }
+.frame-state {
+  position: absolute; top: 0.4rem; left: 0.4rem;
+  font-family: var(--mono); font-size: 0.65rem; letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.72); color: #fff;
+  padding: 0.15rem 0.4rem; border-radius: 4px;
+}
+.frame.hidden-photo .frame-thumb { opacity: 0.28; }
+.photo-card.hidden-photo { border-style: dashed; }
+.frame.busy { opacity: 0.6; pointer-events: none; }
+
+/* ── the couple's note on a frame (ADMIN-009 / GALLERY-007) ─────── */
+/* The row sits outside the hide/unhide button, so a hidden frame can still be
+   captioned and a tap on the note never toggles the photo. */
+.caption-row {
+  border-top: 1px dashed var(--line);
+  padding: 0.35rem 0.5rem 0.45rem;
+  display: grid; gap: 0.25rem;
+}
+.caption-view {
+  width: 100%; min-height: 32px;
+  padding: 0.2rem 0.1rem;
+  border: 0; border-radius: 6px; background: transparent;
+  text-align: left; font-size: 0.82rem; line-height: 1.35;
+  cursor: pointer; overflow-wrap: anywhere;
+}
+.caption-view.is-empty .caption-text { color: var(--ink-2); font-style: italic; }
+.caption-view:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.caption-tick {
+  font-family: var(--mono); font-size: 0.64rem;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ok);
+}
+.caption-edit { display: grid; gap: 0.35rem; }
+.caption-input {
+  font: inherit; font-size: 0.88rem; line-height: 1.35;
+  width: 100%; resize: none;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper); color: var(--ink);
+}
+.caption-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.caption-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.caption-counter {
+  margin-right: auto;
+  font-family: var(--mono); font-size: 0.66rem;
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.caption-counter.is-full { color: var(--danger); }
+.caption-foot .btn { min-height: 34px; padding: 0.2rem 0.55rem; font-size: 0.78rem; }
+/* A 200-character note deserves the full width of a phone screen: the card
+   being edited spans the grid and lays the thumbnail beside the editor. */
+.photo-card.is-editing {
+  grid-column: 1 / -1;
+  flex-direction: row; align-items: stretch;
+}
+.photo-card.is-editing .frame { flex: 0 0 38%; max-width: 150px; }
+.photo-card.is-editing .caption-row {
+  flex: 1 1 auto; min-width: 0;
+  border-top: 0; border-left: 1px dashed var(--line);
+  align-content: start;
+  padding: 0.5rem 0.6rem;
+}
+.photo-card.is-editing .caption-input { min-height: 4.6rem; }
+
+/* ── guests (ADMIN-005) ────────────────────────────────────────── */
+.device-list { margin-top: 0.6rem; display: grid; gap: 0.5rem; }
+.device {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--paper-2); padding: 0.7rem 0.8rem;
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+}
+.device-info { flex: 1 1 55%; min-width: 0; display: grid; gap: 0.1rem; }
+.device-nick { font-weight: 650; overflow-wrap: anywhere; }
+.device-stats, .device-seen { font-family: var(--mono); font-size: 0.74rem; color: var(--ink-2); }
+
+/* ── modal ─────────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(20, 18, 16, 0.55);
+  display: grid; place-items: center; padding: 1rem;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  width: 100%; max-width: 22rem;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 14px; padding: 1.1rem;
+  display: grid; gap: 0.7rem;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+}
+.modal-title { font-size: 1.1rem; }
+.modal-body { font-size: 0.95rem; color: var(--ink-2); }
+.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
+/* ── toasts ────────────────────────────────────────────────────── */
+.toasts {
+  position: fixed; z-index: 70;
+  left: 0.75rem; right: 0.75rem;
+  bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  display: grid; gap: 0.4rem; pointer-events: none;
+}
+.toast {
+  margin: 0 auto; max-width: 26rem; width: 100%;
+  background: var(--ink); color: var(--paper);
+  border-radius: 10px; padding: 0.65rem 0.8rem;
+  font-size: 0.9rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.toast.bad { background: var(--danger); color: #fff; }
+.toast.good { background: var(--ok); color: #fff; }
+
+.spin { animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }

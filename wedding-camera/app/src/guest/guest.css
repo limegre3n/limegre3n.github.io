@@ -1,0 +1,1132 @@
+/* ============================================================================
+   Guest camera — nostalgic 90s film-disposable aesthetic (PRD D16, workstream ①)
+   No images, no fonts, no libraries: every texture is a CSS gradient.
+   Theme-owned values arrive ONLY as custom properties (CONTRACTS §9):
+     --c-bg  --c-accent  --c-text  --font-stack
+   Everything else below is structural chassis (dark-venue friendly per NFR §7).
+   --ink / --accent-ink / --c-on-accent are recomputed by main.js so that
+   whatever palette the couple picks still clears WCAG AA on these surfaces.
+
+   Layout discipline: ONE 8-pt spacing scale (--s1…--s6) and at most three type
+   sizes per screen (--t-lg / --t-md / --t-sm).
+   ========================================================================== */
+
+:root {
+  /* Theme fallbacks — overwritten by lib/theme.js from config/event.theme. */
+  --c-bg: #141210;
+  --c-accent: #e8b04b;
+  --c-text: #f5efe6;
+  --font-stack: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+
+  /* Contrast-guaranteed derivatives (main.js may overwrite). */
+  --ink: #f4efe8;
+  --accent-ink: var(--c-accent);
+  --c-on-accent: #14100c;
+
+  /* Plastic camera body. */
+  --shell: #221e1a;
+  --shell-hi: rgba(255, 255, 255, 0.07);
+  --shell-edge: rgba(0, 0, 0, 0.55);
+  --ink-dim: #b3a89b;
+  --recess: #0c0a09;
+  --hair: rgba(255, 255, 255, 0.1);
+  --hair-soft: rgba(255, 255, 255, 0.06);
+
+  /* 8-pt spacing scale — the only spacing values used anywhere below. */
+  --s1: 8px;
+  --s2: 16px;
+  --s3: 24px;
+  --s4: 32px;
+  --s5: 40px;
+  --s6: 48px;
+
+  /* Type scale — three sizes, no more, per screen. */
+  --t-lg: 1.75rem;
+  --t-md: 1rem;
+  --t-sm: 0.8125rem;
+
+  --r-lg: 20px;
+  --r-md: 12px;
+  --r-sm: 8px;
+
+  --pad-top: max(8px, env(safe-area-inset-top));
+  --pad-bot: max(8px, env(safe-area-inset-bottom));
+  --pad-left: env(safe-area-inset-left);
+  --pad-right: env(safe-area-inset-right);
+
+  /* Very fine moulding tooth — texture, never pattern. */
+  --tooth:
+    repeating-linear-gradient(58deg, rgba(255, 255, 255, 0.018) 0 1px, rgba(0, 0, 0, 0.03) 1px 3px),
+    repeating-linear-gradient(-58deg, rgba(255, 255, 255, 0.014) 0 1px, rgba(0, 0, 0, 0.026) 1px 3px);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--c-bg);
+  color: var(--ink);
+  font-family: var(--font-stack);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+#app {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--pad-top) var(--s2) var(--pad-bot);
+}
+
+/* Welcome sits in the upper two thirds of a tall phone, never dead-centre. */
+#app[data-state='welcome'] {
+  align-items: flex-start;
+  padding-top: calc(var(--pad-top) + var(--s3));
+  padding-bottom: var(--s4);
+}
+
+#app[data-state='viewfinder'],
+#app[data-state='capturing'] { padding: 0; }
+
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+
+:focus-visible {
+  outline: 3px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0;
+}
+
+/* ------------------------------------------------------------------ pieces */
+
+/* Chunky moulded plastic panel. */
+.plastic {
+  background-color: var(--shell);
+  background-image:
+    linear-gradient(180deg, var(--shell-hi), rgba(255, 255, 255, 0) 30%),
+    var(--tooth),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.3));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.4),
+    0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Sunken window (film counter, name plate). */
+.recess {
+  background-image: linear-gradient(180deg, #070706, #16120f);
+  box-shadow:
+    inset 0 3px 6px rgba(0, 0, 0, 0.9),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.07);
+  border-radius: var(--r-sm);
+}
+
+.label-caps {
+  font-size: var(--t-sm);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* Film-counter digits — tabular so the window never jitters. */
+.digits {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+/* ------------------------------------------------------- boot / loading */
+
+.boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  text-align: center;
+}
+
+.boot__body {
+  width: 128px; height: 80px;
+  border-radius: 12px;
+  position: relative;
+  background-color: var(--shell);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 45%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.boot__lens {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 40px; height: 40px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 32%, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0) 45%),
+    radial-gradient(circle at 50% 50%, #1c2b33 40%, #05070a 70%);
+  box-shadow: 0 0 0 4px #14110e, inset 0 0 10px rgba(0, 0, 0, 0.9);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.boot__label { color: var(--ink-dim); font-size: var(--t-md); }
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 4px #14110e, inset 0 0 10px rgba(0, 0, 0, 0.9); }
+  50% { box-shadow: 0 0 0 4px #14110e, 0 0 18px 2px var(--c-accent), inset 0 0 10px rgba(0, 0, 0, 0.9); }
+}
+
+/* ====================================================== LANDING (welcome) */
+
+.page {
+  width: 100%;
+  max-width: 27rem;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Film-leader: a single thin accent edge, not a warning stripe. */
+.page__leader,
+.card__strip {
+  height: 3px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--c-accent) 55%, transparent),
+    var(--c-accent) 45%,
+    color-mix(in srgb, var(--c-accent) 55%, transparent));
+}
+
+@supports not (background: color-mix(in srgb, red 50%, transparent)) {
+  .page__leader, .card__strip { background: var(--c-accent); opacity: 0.85; }
+}
+
+/* Header band: monogram, names, date. Calm, one large element only. */
+.brand {
+  padding: var(--s3) var(--s3) var(--s2);
+  text-align: center;
+  border-bottom: 1px solid var(--hair);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.12));
+}
+
+.brand__mono {
+  display: block;
+  font-size: var(--t-md);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent-ink);
+  margin-bottom: var(--s1);
+}
+
+.brand__names {
+  font-size: var(--t-lg);
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+}
+
+.brand__date {
+  margin-top: var(--s1);
+  font-size: var(--t-sm);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.sheet {
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.welcome {
+  font-size: var(--t-md);
+  line-height: 1.5;
+  max-width: 60ch;
+  text-wrap: balance;
+  text-align: center;
+  margin: 0 auto;
+}
+
+/* Three-step explainer: numerals + short labels on one deliberate row. */
+.steps3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  list-style: none;
+  border-top: 1px solid var(--hair-soft);
+  border-bottom: 1px solid var(--hair-soft);
+  padding: var(--s2) 0;
+}
+
+.steps3 li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+  padding: 0 var(--s1);
+  text-align: center;
+}
+
+.steps3 li + li { border-left: 1px solid var(--hair-soft); }
+
+.steps3__num {
+  width: 24px; height: 24px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-ink);
+}
+
+.steps3__label {
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  color: var(--ink-dim);
+  text-wrap: balance;
+}
+
+/* --------------------------------------------------------------- cards */
+
+.card {
+  width: 100%;
+  max-width: 27rem;
+  border-radius: var(--r-lg);
+  padding: 0 0 var(--s3);
+  overflow: hidden;
+  text-align: center;
+  position: relative;
+}
+
+.card__inner {
+  padding: var(--s3) var(--s3) 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.monogram {
+  font-size: var(--t-md);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent-ink);
+}
+
+.card h1 {
+  font-size: var(--t-lg);
+  line-height: 1.2;
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+.card h2 { font-size: 1.25rem; font-weight: 700; line-height: 1.25; text-wrap: balance; }
+
+.card__date {
+  font-size: var(--t-sm);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.card p { font-size: var(--t-md); color: var(--ink); text-wrap: pretty; max-width: 60ch; }
+
+.card p.muted { color: var(--ink-dim); }
+
+/* Fine print stays fine print inside a card (beats the `.card p` body size). */
+.card .consent,
+.card .status-line,
+.card .notice { font-size: var(--t-sm); }
+
+.card__rule {
+  width: 40px; height: 1px;
+  background: var(--c-accent);
+  opacity: 0.6;
+}
+
+/* Refined film-counter motif: a small sunken window, no stripes. */
+.film-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r-sm);
+  background-image: linear-gradient(180deg, #070706, #16120f);
+  box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.film-chip strong { font-size: 1.25rem; line-height: 1; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+.film-chip span { font-size: var(--t-sm); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-dim); }
+
+/* ------------------------------------------------------------ controls */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  width: 100%;
+}
+
+.field { text-align: left; }
+
+.field__label {
+  display: block;
+  margin-bottom: var(--s1);
+}
+
+.field input {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  padding: var(--s2);
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--recess);
+  color: var(--ink);
+  font-size: var(--t-md);
+  text-align: left;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7);
+}
+
+.field input::placeholder { color: rgba(244, 239, 232, 0.55); }
+
+.field input:focus {
+  border-color: var(--accent-ink);
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+.field__error {
+  display: block;
+  margin-top: var(--s1);
+  font-size: var(--t-sm);
+  color: var(--accent-ink);
+  min-height: 1.2em;
+}
+
+.btn {
+  width: 100%;
+  min-height: 56px;
+  padding: var(--s2);
+  border-radius: var(--r-md);
+  font-size: var(--t-md);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  transition: transform 90ms ease, box-shadow 90ms ease;
+}
+
+.btn--primary {
+  background-color: var(--c-accent);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(0, 0, 0, 0.14));
+  color: var(--c-on-accent);
+  box-shadow: 0 4px 0 var(--shell-edge), 0 10px 20px rgba(0, 0, 0, 0.4);
+}
+
+.btn--primary:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--shell-edge); }
+
+.btn--ghost {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: var(--ink);
+}
+
+.btn--ghost:active { transform: translateY(2px); }
+
+.btn[disabled] { opacity: 0.55; cursor: default; transform: none; }
+
+/* Native-camera fallback. */
+.native {
+  min-height: 56px;
+  padding: var(--s2);
+  border-radius: var(--r-md);
+  border: 1px dashed var(--accent-ink);
+  color: var(--ink);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  width: 100%;
+}
+
+.native:active { transform: translateY(2px); }
+
+/* Fallback view: the phone-camera button is the hero action. */
+.native--primary {
+  min-height: 64px;
+  font-size: var(--t-md);
+  border: none;
+  border-radius: var(--r-md);
+  background-color: var(--c-accent);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(0, 0, 0, 0.14));
+  color: var(--c-on-accent);
+  box-shadow: 0 4px 0 var(--shell-edge), 0 10px 20px rgba(0, 0, 0, 0.4);
+}
+
+.native--primary:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--shell-edge); }
+
+.fallback-more {
+  width: 100%;
+  text-align: left;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  border-top: 1px solid var(--hair);
+  padding-top: var(--s2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.fallback-more summary { cursor: pointer; color: var(--ink); font-weight: 700; }
+.fallback-more .btn { align-self: flex-start; width: auto; min-height: 48px; padding: var(--s1) var(--s2); }
+
+.steps {
+  text-align: left;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  padding-left: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+/* Consent fine print. */
+.consent {
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  color: var(--ink-dim);
+  text-align: center;
+  max-width: 60ch;
+  text-wrap: pretty;
+}
+
+.page .consent {
+  padding: var(--s2) var(--s3) var(--s3);
+  border-top: 1px solid var(--hair-soft);
+  margin: 0 auto;
+}
+
+.card .consent {
+  border-top: 1px solid var(--hair);
+  padding-top: var(--s2);
+  width: 100%;
+}
+
+.notice {
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  padding: var(--s1) var(--s2);
+  border-left: 2px solid var(--c-accent);
+  background: rgba(0, 0, 0, 0.35);
+  text-align: left;
+}
+
+.status-line {
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  min-height: 1.4em;
+}
+
+/* ------------------------------------------------------ end-card artwork */
+
+.canister {
+  width: 72px; height: 88px;
+  position: relative;
+  border-radius: 8px 8px 10px 10px;
+  background-color: #1c1815;
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 34%);
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.5), 0 10px 20px rgba(0, 0, 0, 0.5);
+}
+
+.canister::before {
+  content: '';
+  position: absolute;
+  left: 50%; top: -8px;
+  width: 24px; height: 12px;
+  transform: translateX(-50%);
+  border-radius: 4px 4px 0 0;
+  background: #2b2621;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.canister::after {
+  content: '';
+  position: absolute;
+  left: 8px; right: 8px; top: 24px;
+  height: 32px;
+  border-radius: 2px;
+  background-color: var(--c-accent);
+  opacity: 0.9;
+}
+
+/* Slow-blinking "resting" lamp for the paused state. */
+.lamp {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 12px var(--c-accent);
+  animation: breathe 2.6s ease-in-out infinite;
+}
+
+@keyframes breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* =========================================================== VIEWFINDER */
+
+.vf {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-bg);
+}
+
+.vf__stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.vf__video {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  background: #000;
+  transform-origin: center;
+}
+
+/* Warm film wash — themed, keeps the accent hue in the glass. */
+.vf__wash {
+  position: absolute;
+  inset: 0;
+  background: var(--c-accent);
+  opacity: 0.06;
+  mix-blend-mode: soft-light;
+  pointer-events: none;
+}
+
+/* CSS-only film grain: three stippled gradient layers, jittered in steps. */
+.vf__grain {
+  position: absolute;
+  inset: -12px;
+  pointer-events: none;
+  opacity: 0.22;
+  mix-blend-mode: soft-light;
+  background-image:
+    repeating-radial-gradient(circle at 17% 29%, rgba(255, 255, 255, 0.55) 0 0.5px, rgba(0, 0, 0, 0) 0.5px 2px),
+    repeating-radial-gradient(circle at 71% 63%, rgba(0, 0, 0, 0.6) 0 0.5px, rgba(0, 0, 0, 0) 0.5px 2.5px),
+    repeating-radial-gradient(circle at 43% 88%, rgba(255, 255, 255, 0.4) 0 0.5px, rgba(0, 0, 0, 0) 0.5px 3px);
+  background-size: 3px 3px, 4px 4px, 5px 5px;
+  animation: grain 0.7s steps(1, end) infinite;
+}
+
+@keyframes grain {
+  0%   { background-position: 0 0, 0 0, 0 0; }
+  20%  { background-position: -3px 2px, 4px -1px, 1px 3px; }
+  40%  { background-position: 2px -4px, -2px 3px, -3px -2px; }
+  60%  { background-position: -4px -2px, 2px 4px, 3px 1px; }
+  80%  { background-position: 3px 3px, -4px -3px, -1px -4px; }
+  100% { background-position: 0 0, 0 0, 0 0; }
+}
+
+/* Film vignette. */
+.vf__glass {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(125% 82% at 50% 46%, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* Frame-corner marks — thin and dim. */
+.vf__bracket {
+  position: absolute;
+  width: 20px; height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.vf__bracket--tl { top: var(--s2); left: var(--s2); border-right: 0; border-bottom: 0; }
+.vf__bracket--tr { top: var(--s2); right: var(--s2); border-left: 0; border-bottom: 0; }
+.vf__bracket--bl { bottom: var(--s2); left: var(--s2); border-right: 0; border-top: 0; }
+.vf__bracket--br { bottom: var(--s2); right: var(--s2); border-left: 0; border-top: 0; }
+
+/* While the stream warms up the brackets breathe and the shutter is disabled. */
+#app[data-camera='starting'] .vf__bracket { animation: breathe 1.2s ease-in-out infinite; }
+
+/* Film date-print in the frame corner: small, low-contrast amber. */
+.vf__stamp {
+  position: absolute;
+  right: var(--s6);
+  bottom: 14px;
+  z-index: 18;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--c-accent);
+  opacity: 0.5;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+
+/* Top-left rail: live upload badges only. */
+.vf__rail {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: calc(var(--pad-top) + var(--s1)) var(--s2) 0 calc(var(--s2) + var(--pad-left));
+  display: flex;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.vf__badges {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.badge {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
+}
+
+.badge[hidden] { display: none; }
+
+.badge::before {
+  content: '';
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  flex: 0 0 auto;
+}
+
+.badge--pending::before { animation: breathe 1.4s ease-in-out infinite; }
+.badge--offline::before { background: #d9d9d9; animation: none; }
+.badge--warn { border-color: var(--c-accent); }
+
+/* Screen flash (front camera) + capture blackout + wind-on film strip. */
+.vf__flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  z-index: 40;
+  pointer-events: none;
+  transition: opacity 60ms linear;
+}
+
+.vf__flash.on { opacity: 1; }
+
+.vf__blackout {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  z-index: 35;
+  pointer-events: none;
+}
+
+.vf__wind {
+  position: absolute;
+  inset: 0;
+  z-index: 36;
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12% 0;
+}
+
+/* Two rows of sprocket holes sliding past, like film being wound on. */
+.vf__sprockets {
+  height: 16px;
+  background-color: #17130f;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.82) 0 9px,
+    rgba(0, 0, 0, 0) 9px 26px
+  );
+  background-size: 26px 8px;
+  background-repeat: repeat-x;
+  background-position: 0 center;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.8);
+}
+
+#app[data-state='capturing'] .vf__blackout { animation: blackout 800ms ease-out both; }
+#app[data-state='capturing'] .vf__wind { animation: windfade 800ms ease-out both; }
+#app[data-state='capturing'] .vf__sprockets { animation: sprockets 800ms cubic-bezier(0.2, 0.75, 0.3, 1) both; }
+#app[data-state='capturing'] .vf__grain { animation-duration: 0.16s; opacity: 0.6; }
+
+@keyframes blackout {
+  0% { opacity: 0; }
+  4% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes windfade {
+  0%, 8% { opacity: 0; }
+  16% { opacity: 1; }
+  76% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes sprockets {
+  0% { background-position-x: 0; }
+  100% { background-position-x: -260px; }
+}
+
+/* ------------------------------------------------------------- deck */
+
+.deck {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 25;
+  padding: var(--s2) var(--s2) calc(var(--pad-bot) + var(--s1));
+  padding-left: calc(var(--s2) + var(--pad-left));
+  padding-right: calc(var(--s2) + var(--pad-right));
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+/* Grip ridges along the very top edge of the deck. */
+.deck::before {
+  content: '';
+  position: absolute;
+  top: 6px; left: 50%;
+  transform: translateX(-50%);
+  width: 56px; height: 4px;
+  border-radius: 2px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.18) 0 3px,
+    rgba(0, 0, 0, 0.4) 3px 6px
+  );
+}
+
+/* One cohesive chassis bar: counter window left, secondary control right,
+   identical height, baselines aligned. When the zoom pill lives in the button
+   row the counter simply fills the bar — never an empty slot. */
+.deck__bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s1);
+  margin-top: var(--s1);
+  min-height: 48px;
+}
+
+.counter {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+  min-height: 48px;
+}
+
+.counter__dial {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background:
+    conic-gradient(from 0deg, rgba(255, 255, 255, 0.24) 0 25%, rgba(0, 0, 0, 0.5) 25% 50%,
+                   rgba(255, 255, 255, 0.24) 50% 75%, rgba(0, 0, 0, 0.5) 75%);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.7);
+}
+
+.counter__digits { font-size: 1.375rem; line-height: 1; }
+
+.counter__label { line-height: 1; margin-left: auto; }
+
+#app[data-state='capturing'] .counter__dial { animation: wind-dial 800ms cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+#app[data-state='capturing'] .counter__digits { animation: digit-flip 400ms ease-out both; }
+
+@keyframes wind-dial { from { transform: rotate(0deg); } to { transform: rotate(276deg); } }
+@keyframes digit-flip {
+  0% { transform: translateY(0); opacity: 1; }
+  30% { transform: translateY(-40%); opacity: 0; }
+  55% { transform: translateY(35%); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+/* Symmetric control row: [flip] [SHUTTER] [flash or zoom] — never a hole. */
+.deck__row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.deck__slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+}
+
+/* Textured shutter release — 80px, well over the 64px minimum. */
+.shutter {
+  width: 80px; height: 80px;
+  border-radius: 50%;
+  position: relative;
+  background-color: var(--c-accent);
+  background-image:
+    radial-gradient(circle at 50% 26%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 58%),
+    radial-gradient(circle at 50% 74%, rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0) 62%);
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.08),
+    0 6px 0 var(--shell-edge),
+    0 12px 22px rgba(0, 0, 0, 0.5),
+    inset 0 -3px 7px rgba(0, 0, 0, 0.3),
+    inset 0 3px 5px rgba(255, 255, 255, 0.26);
+  transition: transform 70ms ease, box-shadow 70ms ease;
+}
+
+/* Inner pip so the button reads as a two-stage release. */
+.shutter::after {
+  content: '';
+  position: absolute;
+  inset: 20px;
+  border-radius: 50%;
+  background-image:
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0) 60%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.28));
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.3), inset 0 -2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.shutter:active,
+.shutter[data-pressed='1'] {
+  transform: translateY(5px);
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.06),
+    0 1px 0 var(--shell-edge),
+    inset 0 4px 9px rgba(0, 0, 0, 0.5);
+}
+
+.shutter[disabled] { opacity: 0.5; transform: translateY(3px); }
+
+/* Round secondary controls (flip / flash / zoom-in-row). */
+.ctl {
+  min-width: 64px;
+  min-height: 64px;
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--ink);
+  background-color: #1b1714;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 45%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 4px 0 rgba(0, 0, 0, 0.5),
+    0 8px 14px rgba(0, 0, 0, 0.4);
+  transition: transform 70ms ease, box-shadow 70ms ease;
+}
+
+.ctl:active { transform: translateY(3px); box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55); }
+.ctl[hidden] { display: none; }
+.ctl[disabled] { opacity: 0.45; }
+
+.ctl.on {
+  background-color: var(--c-accent);
+  color: var(--c-on-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    0 0 16px rgba(255, 255, 255, 0.16),
+    0 4px 0 var(--shell-edge);
+}
+
+/* The zoom control has two homes: a pill inside the chassis bar (when the
+   flash button occupies the row's right slot) and a round control in that slot
+   otherwise. Same element, two skins. */
+.zoom { font-variant-numeric: tabular-nums; }
+
+.zoom--pill {
+  flex: 0 0 auto;
+  min-width: 56px;
+  min-height: 48px;
+  padding: 0 var(--s2);
+  border-radius: var(--r-sm);
+  font-size: var(--t-md);
+  font-weight: 700;
+  color: var(--ink);
+  background-color: #1b1714;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 50%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+.zoom--pill.on { color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-ink), 0 2px 0 rgba(0, 0, 0, 0.5); }
+.zoom--pill:active { transform: translateY(2px); }
+
+/* Transient toast (capture failure, rejected upload). */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: var(--s2);
+  transform: translateX(-50%);
+  max-width: min(92%, 24rem);
+  z-index: 45;
+  font-size: var(--t-sm);
+  text-align: center;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--c-accent);
+  color: #fff;
+  animation: toast-in 240ms ease-out both;
+}
+
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Front camera: mirror the preview so it reads like a mirror (capture matches). */
+.vf__video[data-facing='user'] { transform: scaleX(-1) scale(var(--zoom, 1)); }
+.vf__video[data-facing='environment'] { transform: scale(var(--zoom, 1)); }
+
+/* ------------------------------------------------------- accessibility */
+
+@media (prefers-reduced-motion: reduce) {
+  .vf__grain,
+  .lamp,
+  .boot__lens,
+  .badge--pending::before { animation: none !important; }
+  #app[data-state='capturing'] .vf__sprockets,
+  #app[data-state='capturing'] .counter__dial,
+  #app[data-state='capturing'] .counter__digits { animation: none !important; }
+  #app[data-state='capturing'] .vf__blackout { animation: blackout 800ms steps(1, end) both; }
+  .btn, .ctl, .shutter, .zoom { transition: none; }
+  .toast { animation: none; }
+}
+
+@media (prefers-contrast: more) {
+  .vf__grain, .vf__wash { display: none; }
+  .badge { background: #000; border-color: #fff; }
+  .vf__stamp { opacity: 0.85; }
+}
+
+/* ------------------------------------------------- landscape grip strip */
+/* A phone turned sideways must never lose viewfinder area to a bottom deck:
+   the controls move into a narrow right-hand grip, icons stay upright and the
+   stage keeps the whole remaining width. Portrait is untouched. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .vf { flex-direction: row; }
+
+  .vf__stage { padding: 0; }
+
+  .vf__rail {
+    padding-top: calc(var(--pad-top) + var(--s1));
+  }
+
+  .deck {
+    flex: 0 0 150px;
+    width: 150px;
+    border-radius: var(--r-lg) 0 0 var(--r-lg);
+    padding: calc(var(--pad-top) + var(--s1)) calc(var(--s1) + var(--pad-right)) calc(var(--pad-bot) + var(--s1)) var(--s1);
+    justify-content: flex-start;
+    gap: var(--s2);
+  }
+
+  /* Counter sits at the top of the grip; the shutter group centres on the thumb. */
+  .deck__row { margin-block: auto; }
+
+  /* Grip ridges run down the leading edge instead of across the top. */
+  .deck::before {
+    top: 50%; left: 6px;
+    transform: translateY(-50%);
+    width: 4px; height: 56px;
+    background-image: repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.18) 0 3px,
+      rgba(0, 0, 0, 0.4) 3px 6px
+    );
+  }
+
+  .deck__bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s1);
+    margin-top: 0;
+  }
+
+  .counter {
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--s1);
+    min-height: 0;
+  }
+
+  .counter__dial { display: none; }
+  .counter__digits { font-size: 1.25rem; }
+  .counter__label { margin-left: 0; font-size: 0.6875rem; letter-spacing: 0.1em; }
+
+  .zoom--pill { width: 100%; min-height: 40px; }
+
+  /* Vertical order in the grip: counter, zoom pill, [flash], shutter, flip. */
+  .deck__row {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: var(--s2);
+  }
+
+  .deck__slot { min-height: 0; }
+  .deck__slot--right { order: 1; }
+  .shutter { order: 2; width: 76px; height: 76px; }
+  .shutter::after { inset: 19px; }
+  .deck__slot--left { order: 3; }
+
+  .ctl { width: 56px; height: 56px; min-width: 56px; min-height: 56px; font-size: 1.125rem; }
+
+  .vf__stamp { right: var(--s5); bottom: var(--s2); }
+  .vf__bracket { width: 16px; height: 16px; }
+}
+
+/* Roomy screens: keep the camera phone-shaped and centred. */
+@media (min-width: 480px) and (min-height: 700px) {
+  .vf { max-width: 34rem; margin: 0 auto; inset: 0; }
+  .deck { border-radius: var(--r-lg); margin: 0 var(--s1) var(--s1); }
+}
