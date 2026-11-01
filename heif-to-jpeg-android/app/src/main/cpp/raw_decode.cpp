@@ -1,4 +1,4 @@
-// Camera RAW (Sony .ARW etc.) -> JPEG via LibRaw.
+// Camera RAW (Sony .ARW etc.) decoding via LibRaw into a DecodedImage.
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +11,7 @@
 
 #include <libraw/libraw.h>
 
-#include "jpeg_encoder.h"
+#include "image.h"
 
 namespace {
 
@@ -147,27 +147,19 @@ std::vector<uint8_t> buildExif(const libraw_data_t& d, int width, int height) {
     writeIfd(tiff, exif, exifOff);
     if (!gps.empty()) writeIfd(tiff, gps, gpsOff);
 
-    std::vector<uint8_t> payload = {'E', 'x', 'i', 'f', 0, 0};
-    payload.insert(payload.end(), tiff.begin(), tiff.end());
-    return payload;
+    return tiff;
 }
-
-struct MemImageDeleter {
-    void operator()(libraw_processed_image_t* p) const { LibRaw::dcraw_clear_mem(p); }
-};
 
 }  // namespace
 
-// Develops a camera RAW file and writes a maximum-quality JPEG.
+// Develops a camera RAW file into 16-bit sRGB.
 // Returns "" on success or an error message.
-std::string convertRawToJpeg(const uint8_t* data, size_t len, FILE* out, int quality,
-                             std::string& warnings, int& outW, int& outH) {
-    (void)warnings;
+std::string decodeRaw(const uint8_t* data, size_t len, DecodedImage& out) {
     std::unique_ptr<LibRaw> raw(new LibRaw(0));
     libraw_output_params_t& p = raw->imgdata.params;
-    p.output_bps = 16;      // keep full precision until the JPEG encoder
+    p.output_bps = 16;      // keep full precision until the encoder
     p.use_camera_wb = 1;    // white balance as shot
-    p.output_color = 1;     // sRGB (what JPEG viewers assume)
+    p.output_color = 1;     // sRGB
     p.user_qual = 3;        // AHD demosaicing
     p.highlight = 0;        // clip highlights (like the camera)
 
@@ -179,18 +171,22 @@ std::string convertRawToJpeg(const uint8_t* data, size_t len, FILE* out, int qua
     if (rc != LIBRAW_SUCCESS) return std::string("RAW processing failed: ") + libraw_strerror(rc);
 
     int err = 0;
-    std::unique_ptr<libraw_processed_image_t, MemImageDeleter> img(raw->dcraw_make_mem_image(&err));
-    if (!img || err != LIBRAW_SUCCESS) return std::string("RAW output failed: ") + libraw_strerror(err);
+    libraw_processed_image_t* mem = raw->dcraw_make_mem_image(&err);
+    if (!mem || err != LIBRAW_SUCCESS) {
+        if (mem) LibRaw::dcraw_clear_mem(mem);
+        return std::string("RAW output failed: ") + libraw_strerror(err);
+    }
+    std::shared_ptr<libraw_processed_image_t> img(mem, [](libraw_processed_image_t* m) { LibRaw::dcraw_clear_mem(m); });
     if (img->type != LIBRAW_IMAGE_BITMAP || img->colors != 3 || img->bits != 16)
         return "Unexpected RAW output format";
 
-    outW = img->width;
-    outH = img->height;
-    std::vector<JpegMarker> markers;
-    markers.push_back({0xE1, buildExif(raw->imgdata, outW, outH)});
-
-    raw->recycle();  // free LibRaw's working buffers before encoding
-
-    JpegSource src{img->data, outW, outH, outW * 3 * 2, 2, 16};
-    return encodeJpeg(src, quality, markers, out);
+    out.width = img->width;
+    out.height = img->height;
+    out.stride = img->width * 3 * 2;
+    out.bytesPerSample = 2;
+    out.bitDepth = 16;
+    out.data = img->data;
+    out.owner = img;
+    out.exifTiff = buildExif(raw->imgdata, out.width, out.height);
+    return "";
 }

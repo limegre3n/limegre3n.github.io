@@ -233,7 +233,7 @@ class MainActivity : Activity() {
 
         val result = try {
             contentResolver.openFileDescriptor(outUri, "w")?.use { pfd ->
-                NativeConverter.convert(input, pfd.fd, 100)
+                NativeConverter.convert(input, pfd.fd, NativeConverter.FORMAT_JPEG, 100, false, true)
             } ?: "ERR|cannot open output"
         } catch (e: Throwable) {
             "ERR|${e.message}"

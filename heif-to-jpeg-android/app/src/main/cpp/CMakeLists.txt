@@ -1,14 +1,18 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(heif2jpeg C CXX)
 
-# Software HEIF/HEVC decoding (libheif + libde265), built from source so the app
-# can decode HEVC "Main 4:2:2 10" camera files (Sony/Canon/Fujifilm .HIF etc.)
-# that most phone hardware decoders reject.
+# Native dependencies, all built from source:
+#  * libheif + libde265: software HEVC decoding, so the app can read HEVC
+#    "Main 4:2:2 10" camera files (Sony/Canon/Fujifilm .HIF) that most phone
+#    hardware decoders reject
+#  * libaom: AV1 encoding for AVIF output (through libheif)
+#  * LibRaw: camera RAW (Sony .ARW)
 
 include(ExternalProject)
 
 set(LIBDE265_TAG v1.0.16)
 set(LIBHEIF_TAG v1.20.2)
+set(LIBAOM_TAG v3.12.1)
 
 set(DEPS_PREFIX ${CMAKE_BINARY_DIR}/deps)
 set(DEPS_INSTALL ${DEPS_PREFIX}/install)
@@ -53,12 +57,37 @@ ExternalProject_Add(libde265_ext
     BUILD_BYPRODUCTS ${DEPS_INSTALL}/lib/libde265.a
 )
 
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+    set(AOM_CPU arm64)
+elseif(ANDROID AND ANDROID_ABI STREQUAL "x86_64")
+    set(AOM_CPU x86_64)
+else()
+    set(AOM_CPU generic)
+endif()
+
+ExternalProject_Add(libaom_ext
+    GIT_REPOSITORY https://aomedia.googlesource.com/aom
+    GIT_TAG ${LIBAOM_TAG}
+    GIT_SHALLOW TRUE
+    PREFIX ${DEPS_PREFIX}/libaom
+    CMAKE_ARGS ${FORWARD_ARGS}
+        -DAOM_TARGET_CPU=${AOM_CPU}
+        -DCONFIG_AV1_DECODER=0
+        -DCONFIG_PIC=1
+        -DENABLE_DOCS=0
+        -DENABLE_EXAMPLES=0
+        -DENABLE_TESTDATA=0
+        -DENABLE_TESTS=0
+        -DENABLE_TOOLS=0
+    BUILD_BYPRODUCTS ${DEPS_INSTALL}/lib/libaom.a
+)
+
 ExternalProject_Add(libheif_ext
     GIT_REPOSITORY https://github.com/strukturag/libheif.git
     GIT_TAG ${LIBHEIF_TAG}
     GIT_SHALLOW TRUE
     PREFIX ${DEPS_PREFIX}/libheif
-    DEPENDS libde265_ext
+    DEPENDS libde265_ext libaom_ext
     CMAKE_ARGS ${FORWARD_ARGS}
         -DCMAKE_PREFIX_PATH=${DEPS_INSTALL}
         -DCMAKE_FIND_ROOT_PATH=${DEPS_INSTALL}
@@ -71,7 +100,9 @@ ExternalProject_Add(libheif_ext
         -DWITH_VVDEC=OFF
         -DWITH_VVENC=OFF
         -DWITH_AOM_DECODER=OFF
-        -DWITH_AOM_ENCODER=OFF
+        -DWITH_AOM_ENCODER=ON
+        -DAOM_INCLUDE_DIR=${DEPS_INSTALL}/include
+        -DAOM_LIBRARY=${DEPS_INSTALL}/lib/libaom.a
         -DWITH_DAV1D=OFF
         -DWITH_RAV1E=OFF
         -DWITH_SvtEnc=OFF
@@ -101,6 +132,10 @@ file(MAKE_DIRECTORY ${DEPS_INSTALL}/include)
 add_library(de265_static STATIC IMPORTED)
 set_target_properties(de265_static PROPERTIES IMPORTED_LOCATION ${DEPS_INSTALL}/lib/libde265.a)
 add_dependencies(de265_static libde265_ext)
+
+add_library(aom_static STATIC IMPORTED)
+set_target_properties(aom_static PROPERTIES IMPORTED_LOCATION ${DEPS_INSTALL}/lib/libaom.a)
+add_dependencies(aom_static libaom_ext)
 
 add_library(heif_static STATIC IMPORTED)
 set_target_properties(heif_static PROPERTIES
@@ -164,11 +199,11 @@ set_target_properties(raw_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(heif2jpeg SHARED heif2jpeg.cpp raw2jpeg.cpp jpeg_encoder.cpp)
+add_library(heif2jpeg SHARED jni_bridge.cpp heif_decode.cpp raw_decode.cpp writers.cpp jpeg_encoder.cpp)
 target_compile_options(heif2jpeg PRIVATE -O3 -Wall)
 
 if(ANDROID)
-    target_link_libraries(heif2jpeg heif_static de265_static raw_static log)
+    target_link_libraries(heif2jpeg heif_static de265_static aom_static raw_static log)
     # 16 KB page alignment (required for Android 15+ devices with 16K pages).
     target_link_options(heif2jpeg PRIVATE "-Wl,-z,max-page-size=16384")
 else()
@@ -176,5 +211,5 @@ else()
     find_package(JNI REQUIRED)
     target_include_directories(heif2jpeg PRIVATE ${JNI_INCLUDE_DIRS})
     find_package(Threads REQUIRED)
-    target_link_libraries(heif2jpeg heif_static de265_static raw_static Threads::Threads)
+    target_link_libraries(heif2jpeg heif_static de265_static aom_static raw_static Threads::Threads)
 endif()
