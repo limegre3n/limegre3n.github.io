@@ -1,19 +1,20 @@
 # HEIF to JPEG (Android)
 
 A small Android app that converts HEIF / HEIC / HIF photos, including the
-**10-bit 4:2:2** files from Sony, Canon, Fujifilm and similar cameras, to
-the highest-quality JPEG the format allows.
+**10-bit 4:2:2** files from Sony, Canon, Fujifilm and similar cameras, and
+**Sony ARW RAW** files to the highest-quality JPEG the format allows.
 
 ## What it does
 
 1. **Choose folder**: pick a folder with the system folder picker. The app
-   lists every `.heic`, `.heif` and `.hif` file in it.
+   lists every `.heic`, `.heif`, `.hif` and `.arw` file in it.
 2. Tick the files to convert (all are ticked by default).
 3. Optionally tick **Replace originals**. Each HEIF is deleted only after its
    JPEG has been written. Files that fail to convert are never deleted.
 4. Tap **Convert**. JPEGs are saved next to the originals with the same name
    (`DSC01234.HIF` becomes `DSC01234.jpg`). If that name is taken, the app
-   adds `_1`, `_2` and so on, so it never overwrites an existing file.
+   adds `_1`, `_2` and so on, so it never overwrites an existing file. (If you
+   shot RAW+HEIF and convert both, the second one becomes `DSC01234_1.jpg`.)
 
 ## Quality settings
 
@@ -43,6 +44,32 @@ The JPEG format can't store an image with zero loss:
 
 If you need a truly lossless result, convert to 16-bit PNG or TIFF instead.
 
+## ARW (RAW) conversion
+
+A RAW file is sensor data, not a finished picture, so it has to be
+*developed*. The app uses [LibRaw](https://www.libraw.org/) with these settings:
+
+| Setting        | Value                                                        |
+|----------------|--------------------------------------------------------------|
+| Demosaicing    | AHD                                                          |
+| White balance  | As shot (camera setting)                                     |
+| Colour space   | sRGB                                                         |
+| Precision      | 16 bits per channel all the way into the JPEG encoder        |
+| Brightness     | LibRaw default auto-brightness (clips the brightest 1%)      |
+| Highlights     | Clipped                                                      |
+| Lens/rotation  | Camera rotation applied. No lens distortion/vignetting correction |
+| Metadata       | Make, model, date, exposure time, aperture, ISO, focal length, lens and GPS are written to the JPEG's EXIF |
+
+The JPEG encoding is the same quality-100, 4:4:4 encoder used for HEIF.
+
+Colours and contrast **won't match Sony's in-camera JPEGs**. Sony's picture
+profiles, Creative Looks, DRO and lens corrections are proprietary. Use a RAW
+editor (Lightroom, Capture One, darktable) if you need full control.
+
+Be careful with **Replace originals** for ARW files: a RAW file holds much more
+than any JPEG can (14-bit data, recoverable highlights, editable white
+balance). The app shows an extra warning before deleting ARW files.
+
 ## Building
 
 GitHub Actions builds the APK on every push that touches this folder
@@ -50,7 +77,7 @@ GitHub Actions builds the APK on every push that touches this folder
 GitHub Release named `heif-to-jpeg-build-N` with `HeifToJpeg.apk` attached.
 
 Local build (Android SDK + NDK 27 required; git must be on PATH because the
-native build downloads libheif/libde265):
+native build downloads libheif, libde265 and LibRaw):
 
 ```sh
 cd heif-to-jpeg-android

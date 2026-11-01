@@ -1,4 +1,4 @@
-// HEIF -> JPEG conversion core + JNI bridge.
+// HEIF -> JPEG conversion core + JNI bridge (RAW files are handed to raw2jpeg.cpp).
 
 #include <jni.h>
 #include <unistd.h>
@@ -207,6 +207,9 @@ std::string convertHeifToJpeg(const uint8_t* data, size_t len, FILE* out, int qu
     return encodeJpeg(src, quality, markers, out);
 }
 
+std::string convertRawToJpeg(const uint8_t* data, size_t len, FILE* out, int quality,
+                             std::string& warnings, int& outW, int& outH);
+
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
     heif_init(nullptr);
     return JNI_VERSION_1_6;
@@ -229,8 +232,12 @@ Java_io_github_limegre3n_heif2jpeg_NativeConverter_convert(JNIEnv* env, jclass, 
     } else {
         std::string warnings;
         int w = 0, h = 0;
-        std::string e = convertHeifToJpeg(reinterpret_cast<const uint8_t*>(bytes), (size_t)len, out,
-                                          quality, warnings, w, h);
+        const uint8_t* data = reinterpret_cast<const uint8_t*>(bytes);
+        // HEIF files carry an ISO-BMFF 'ftyp' box at offset 4; anything else goes to LibRaw.
+        bool isHeif = len >= 12 && std::memcmp(data + 4, "ftyp", 4) == 0;
+        std::string e = isHeif
+            ? convertHeifToJpeg(data, (size_t)len, out, quality, warnings, w, h)
+            : convertRawToJpeg(data, (size_t)len, out, quality, warnings, w, h);
         if (fclose(out) != 0 && e.empty()) e = "Failed to finish writing output";
         result = e.empty() ? "OK|" + std::to_string(w) + "x" + std::to_string(h) + "|" + warnings
                            : "ERR|" + e;

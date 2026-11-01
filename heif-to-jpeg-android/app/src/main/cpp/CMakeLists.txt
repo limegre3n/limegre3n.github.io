@@ -109,14 +109,66 @@ set_target_properties(heif_static PROPERTIES
     INTERFACE_COMPILE_DEFINITIONS LIBHEIF_STATIC_BUILD)
 add_dependencies(heif_static libheif_ext)
 
+# ---- LibRaw (camera RAW: Sony .ARW and others) -------------------------------
+# LibRaw ships no CMake build, so fetch the sources and compile the same file
+# list as its Makefile.dist.
+include(FetchContent)
+FetchContent_Declare(libraw
+    GIT_REPOSITORY https://github.com/LibRaw/LibRaw.git
+    GIT_TAG 0.22.3
+    GIT_SHALLOW TRUE)
+FetchContent_GetProperties(libraw)
+if(NOT libraw_POPULATED)
+    FetchContent_Populate(libraw)
+endif()
+
+set(LIBRAW_SRC_FILES
+    src/decoders/canon_600.cpp src/decoders/crx.cpp src/decoders/decoders_dcraw.cpp
+    src/decoders/decoders_libraw.cpp src/decoders/decoders_libraw_dcrdefs.cpp
+    src/decoders/dng.cpp src/decoders/fp_dng.cpp src/decoders/fuji_compressed.cpp
+    src/decoders/generic.cpp src/decoders/kodak_decoders.cpp src/decoders/load_mfbacks.cpp
+    src/decoders/olympus14.cpp src/decoders/pana8.cpp src/decoders/smal.cpp
+    src/decoders/sonycc.cpp src/decoders/unpack.cpp src/decoders/unpack_thumb.cpp
+    src/decompressors/losslessjpeg.cpp
+    src/demosaic/aahd_demosaic.cpp src/demosaic/ahd_demosaic.cpp src/demosaic/dcb_demosaic.cpp
+    src/demosaic/dht_demosaic.cpp src/demosaic/misc_demosaic.cpp src/demosaic/xtrans_demosaic.cpp
+    src/integration/dngsdk_glue.cpp src/integration/rawspeed_glue.cpp
+    src/libraw_c_api.cpp src/libraw_datastream.cpp
+    src/metadata/adobepano.cpp src/metadata/canon.cpp src/metadata/ciff.cpp
+    src/metadata/cr3_parser.cpp src/metadata/epson.cpp src/metadata/exif_gps.cpp
+    src/metadata/fuji.cpp src/metadata/hasselblad_model.cpp src/metadata/identify.cpp
+    src/metadata/identify_tools.cpp src/metadata/kodak.cpp src/metadata/leica.cpp
+    src/metadata/makernotes.cpp src/metadata/mediumformat.cpp src/metadata/minolta.cpp
+    src/metadata/misc_parsers.cpp src/metadata/nikon.cpp src/metadata/normalize_model.cpp
+    src/metadata/olympus.cpp src/metadata/p1.cpp src/metadata/pentax.cpp
+    src/metadata/samsung.cpp src/metadata/sony.cpp src/metadata/tiff.cpp
+    src/postprocessing/aspect_ratio.cpp src/postprocessing/dcraw_process.cpp
+    src/postprocessing/mem_image.cpp src/postprocessing/postprocessing_aux.cpp
+    src/postprocessing/postprocessing_utils.cpp src/postprocessing/postprocessing_utils_dcrdefs.cpp
+    src/preprocessing/ext_preprocess.cpp src/preprocessing/raw2image.cpp
+    src/preprocessing/subtract_black.cpp
+    src/tables/cameralist.cpp src/tables/colorconst.cpp src/tables/colordata.cpp
+    src/tables/wblists.cpp
+    src/utils/curves.cpp src/utils/decoder_info.cpp src/utils/init_close_utils.cpp
+    src/utils/open.cpp src/utils/phaseone_processing.cpp src/utils/read_utils.cpp
+    src/utils/thumb_utils.cpp src/utils/utils_dcraw.cpp src/utils/utils_libraw.cpp
+    src/write/apply_profile.cpp src/write/file_write.cpp src/write/tiff_writer.cpp
+    src/x3f/x3f_parse_process.cpp src/x3f/x3f_utils_patched.cpp)
+list(TRANSFORM LIBRAW_SRC_FILES PREPEND ${libraw_SOURCE_DIR}/)
+
+add_library(raw_static STATIC ${LIBRAW_SRC_FILES})
+target_include_directories(raw_static PUBLIC ${libraw_SOURCE_DIR})
+target_compile_options(raw_static PRIVATE -O3 -w)
+set_target_properties(raw_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(heif2jpeg SHARED heif2jpeg.cpp jpeg_encoder.cpp)
+add_library(heif2jpeg SHARED heif2jpeg.cpp raw2jpeg.cpp jpeg_encoder.cpp)
 target_compile_options(heif2jpeg PRIVATE -O3 -Wall)
 
 if(ANDROID)
-    target_link_libraries(heif2jpeg heif_static de265_static log)
+    target_link_libraries(heif2jpeg heif_static de265_static raw_static log)
     # 16 KB page alignment (required for Android 15+ devices with 16K pages).
     target_link_options(heif2jpeg PRIVATE "-Wl,-z,max-page-size=16384")
 else()
@@ -124,5 +176,5 @@ else()
     find_package(JNI REQUIRED)
     target_include_directories(heif2jpeg PRIVATE ${JNI_INCLUDE_DIRS})
     find_package(Threads REQUIRED)
-    target_link_libraries(heif2jpeg heif_static de265_static Threads::Threads)
+    target_link_libraries(heif2jpeg heif_static de265_static raw_static Threads::Threads)
 endif()

@@ -19,7 +19,7 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
-    private data class HeifFile(val uri: Uri, val name: String, val size: Long)
+    private data class PhotoFile(val uri: Uri, val name: String, val size: Long)
 
     private lateinit var folderInfo: TextView
     private lateinit var fileList: ListView
@@ -30,7 +30,7 @@ class MainActivity : Activity() {
     private lateinit var logScroll: ScrollView
 
     private var treeUri: Uri? = null
-    private var files: List<HeifFile> = emptyList()
+    private var files: List<PhotoFile> = emptyList()
     private val existingNames = mutableSetOf<String>()
     private val worker = Executors.newSingleThreadExecutor()
     private var busy = false
@@ -93,7 +93,7 @@ class MainActivity : Activity() {
 
     private fun loadFolder(tree: Uri) {
         treeUri = tree
-        val found = mutableListOf<HeifFile>()
+        val found = mutableListOf<PhotoFile>()
         existingNames.clear()
         try {
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -116,8 +116,8 @@ class MainActivity : Activity() {
                     existingNames.add(name.lowercase())
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
                     val ext = name.substringAfterLast('.', "").lowercase()
-                    if (ext in HEIF_EXTENSIONS || mime == "image/heif" || mime == "image/heic") {
-                        found += HeifFile(
+                    if (ext in SUPPORTED_EXTENSIONS || mime in SUPPORTED_MIME_TYPES) {
+                        found += PhotoFile(
                             DocumentsContract.buildDocumentUriUsingTree(tree, id), name,
                             if (c.isNull(3)) 0 else c.getLong(3)
                         )
@@ -129,7 +129,7 @@ class MainActivity : Activity() {
         }
         files = found.sortedBy { it.name.lowercase() }
         val folderName = DocumentsContract.getTreeDocumentId(tree).substringAfterLast(':').ifEmpty { "/" }
-        folderInfo.text = "Folder: $folderName  -  ${files.size} HEIF file(s)"
+        folderInfo.text = "Folder: $folderName  -  ${files.size} HEIF/ARW file(s)"
         fileList.adapter = ArrayAdapter(
             this, android.R.layout.simple_list_item_multiple_choice,
             files.map { "${it.name}   (${formatSize(it.size)})" }
@@ -142,7 +142,7 @@ class MainActivity : Activity() {
         updateConvertButton()
     }
 
-    private fun selectedFiles(): List<HeifFile> {
+    private fun selectedFiles(): List<PhotoFile> {
         val checked = fileList.checkedItemPositions
         return files.filterIndexed { i, _ -> checked.get(i) }
     }
@@ -161,8 +161,13 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Replace originals?")
                 .setMessage(
-                    "${selection.size} HEIF file(s) will be permanently deleted after each one " +
-                        "is converted successfully. Files that fail to convert are kept."
+                    "${selection.size} original file(s) will be permanently deleted after each one " +
+                        "is converted successfully. Files that fail to convert are kept." +
+                        if (selection.any { it.name.endsWith(".arw", ignoreCase = true) })
+                            "\n\nWarning: this includes ARW RAW files. A RAW file holds far more " +
+                                "information (14-bit sensor data, highlight detail, editable white " +
+                                "balance) than any JPEG can. Deleting it cannot be undone."
+                        else ""
                 )
                 .setPositiveButton("Convert & replace") { _, _ -> startConversion(selection, true) }
                 .setNegativeButton(android.R.string.cancel, null)
@@ -172,7 +177,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startConversion(selection: List<HeifFile>, replace: Boolean) {
+    private fun startConversion(selection: List<PhotoFile>, replace: Boolean) {
         val tree = treeUri ?: return
         busy = true
         updateConvertButton()
@@ -209,7 +214,7 @@ class MainActivity : Activity() {
     }
 
     /** Converts one file; returns a human-readable status line. Runs on the worker thread. */
-    private fun convertOne(parent: Uri, f: HeifFile, replace: Boolean): String {
+    private fun convertOne(parent: Uri, f: PhotoFile, replace: Boolean): String {
         val input = try {
             contentResolver.openInputStream(f.uri)?.use { it.readBytes() }
                 ?: return "FAILED - cannot open"
@@ -291,6 +296,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_TREE = 1
-        private val HEIF_EXTENSIONS = setOf("heic", "heif", "hif")
+        private val SUPPORTED_EXTENSIONS = setOf("heic", "heif", "hif", "arw")
+        private val SUPPORTED_MIME_TYPES = setOf("image/heif", "image/heic", "image/x-sony-arw")
     }
 }
