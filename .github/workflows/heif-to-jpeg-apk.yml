@@ -44,9 +44,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: heif-to-jpeg-build-${{ github.run_number }}
-          name: HEIF to JPEG converter (build ${{ github.run_number }})
+          name: Photo Converter (build ${{ github.run_number }})
           target_commitish: ${{ github.sha }}
           body: |
-            Android APK for converting HEIF/HEIC/HIF (incl. 10-bit 4:2:2) and Sony ARW RAW files to quality-100 4:4:4 JPEG.
+            Android APK for converting HEIF/HEIC/HIF (incl. 10-bit 4:2:2) and Sony ARW RAW files to JPEG or AVIF.
             Download HeifToJpeg.apk on your phone and open it to install (allow "install unknown apps").
           files: heif-to-jpeg-android/HeifToJpeg.apk
