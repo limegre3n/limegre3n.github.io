@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Picture frame with a mountain and a conversion arrow. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="4"
+        android:pathData="M32,36h44v36h-44z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M36,68l12,-16l9,11l6,-7l9,12z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M66,46m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+</vector>

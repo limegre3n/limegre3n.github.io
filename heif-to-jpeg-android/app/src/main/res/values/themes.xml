@@ -1,0 +1,7 @@
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.Light.DarkActionBar">
+        <item name="android:colorPrimary">#2E7D32</item>
+        <item name="android:colorPrimaryDark">#1B5E20</item>
+        <item name="android:colorAccent">#43A047</item>
+    </style>
+</resources>
